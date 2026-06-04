@@ -1,0 +1,28 @@
+name: Stock Signal Bot
+
+on:
+  schedule:
+    - cron: "0 22 * * 1-5"   # 22:00 UTC weekdays, just after US close
+  workflow_dispatch: {}       # lets you run it on demand from the Actions tab
+
+jobs:
+  run-signal-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install yfinance requests
+
+      - name: Run signal bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOL: AAPL
+        run: python signal_bot.py
