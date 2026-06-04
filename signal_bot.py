@@ -8,7 +8,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 SYMBOL = os.environ.get("SYMBOL", "AAPL")
 
 # --- Strategy dials (tune after seeing real signals) ---
-LEFT_K = 10        # how dominant a swing must be vs bars to its left (higher = bigger swings only)
+LEFT_K = 20        # how dominant a swing must be vs bars to its left (higher = bigger swings only)
 RIGHT_K = 3        # bars to the right (small, so recent swings still register)
 ENTRY_MIN_PCT = 3.0
 ENTRY_MAX_PCT = 8.0
