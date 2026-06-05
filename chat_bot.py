@@ -20,6 +20,7 @@ ANTHROPIC_API_KEY secret is present, a written AI opinion is added on top.
 import os
 import re
 import json
+import time
 import datetime
 
 import requests
@@ -84,15 +85,24 @@ def get_updates(offset):
     params = {"timeout": 0}
     if offset is not None:
         params["offset"] = offset
-    r = requests.get(url, params=params, timeout=25)
-    if r.status_code == 409:
-        # Conflict: a webhook is active or another poller is running. Skip this cycle
-        # rather than failing the job; next run will try again.
-        print("getUpdates 409 conflict — clearing webhook and skipping this cycle.")
-        delete_webhook()
-        return None
-    r.raise_for_status()
-    return r.json().get("result", [])
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=25)
+        except requests.RequestException as e:
+            print(f"getUpdates network error: {e}")
+            time.sleep(3)
+            continue
+        if r.status_code == 409:
+            # Conflict: a webhook is active or another poller is briefly in flight.
+            # Clear any webhook, back off, and retry before giving up the cycle.
+            print(f"getUpdates 409 conflict (attempt {attempt + 1}) — clearing webhook, backing off.")
+            delete_webhook()
+            time.sleep(3)
+            continue
+        r.raise_for_status()
+        return r.json().get("result", [])
+    print("getUpdates still conflicting — skipping this cycle; next run will retry.")
+    return None
 
 
 # ---------- analysis ----------
