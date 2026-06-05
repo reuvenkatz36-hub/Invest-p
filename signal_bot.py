@@ -32,8 +32,8 @@ FALLBACK_SYMBOLS = [
 ]
 
 # --- Strategy dials (tune any of these, one number at a time) ---
-LEFT_K = 20            # swing significance
-RIGHT_K = 3
+LEFT_K = 10            # swing significance (lookback window before a pivot)
+RIGHT_K = 1            # bars required after a low to confirm it (1 = react fast to fresh bounces)
 ENTRY_MIN_PCT = 3.0    # price must be 3-8% above the recent higher low
 ENTRY_MAX_PCT = 8.0
 NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tight pullback)
