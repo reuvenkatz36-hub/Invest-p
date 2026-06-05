@@ -173,7 +173,10 @@ def evaluate(highs, lows, closes, vols):
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
     fires = pulled_back and turning_up and volume_ok
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
-                fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100))
+                fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
+                higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
+                in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
+                support=support, sup_slope=sup_slope)
 
 
 def get_ohlcv(data, sym):
