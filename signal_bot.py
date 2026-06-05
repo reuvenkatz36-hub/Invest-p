@@ -147,8 +147,9 @@ def evaluate(highs, lows, closes, vols):
     support, sup_slope = trendline(swing_lows, x)
     resistance, _ = trendline(swing_highs, x)
 
-    higher_highs = (high_last[1] > high_prev[1]) or (price > high_last[1])
-    is_uptrend = higher_highs and sup_slope > 0                      # stronger-trend filter
+    higher_highs = high_last[1] > high_prev[1]                       # each high above the last high
+    higher_lows = low_last[1] > low_prev[1]                          # pullback bottoms above the prior low
+    is_uptrend = higher_highs and higher_lows and sup_slope > 0      # classic uptrend staircase
     low_bars_ago = x - low_last[0]
     coming_off_recent_low = (low_last[0] > high_last[0]) and (low_bars_ago <= RECENT_LOW_MAX_BARS)
     near_support = support <= price <= support * (1 + NEAR_SUPPORT_PCT / 100)   # tight pullback
