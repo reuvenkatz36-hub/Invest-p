@@ -71,12 +71,26 @@ def send(chat_id, text):
         print(f"send failed: {e}")
 
 
+def delete_webhook():
+    """Clear any registered webhook so getUpdates polling works (we use polling)."""
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook", timeout=15)
+    except requests.RequestException:
+        pass
+
+
 def get_updates(offset):
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     params = {"timeout": 0}
     if offset is not None:
         params["offset"] = offset
     r = requests.get(url, params=params, timeout=25)
+    if r.status_code == 409:
+        # Conflict: a webhook is active or another poller is running. Skip this cycle
+        # rather than failing the job; next run will try again.
+        print("getUpdates 409 conflict — clearing webhook and skipping this cycle.")
+        delete_webhook()
+        return None
     r.raise_for_status()
     return r.json().get("result", [])
 
@@ -358,10 +372,11 @@ def main():
     trades = load_json(TRADES_FILE, {"open": [], "closed": []})
     offset = state.get("offset")
     processed = 0
+    delete_webhook()   # ensure polling isn't blocked by a stale webhook
 
     while True:
         updates = get_updates(offset)
-        if not updates:
+        if not updates:   # None (conflict) or [] (drained) -> done for this cycle
             break
         for u in updates:
             offset = u["update_id"] + 1
