@@ -44,14 +44,17 @@ CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
 
-def send_telegram_message(message: str) -> None:
+def send_telegram_message(message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
         resp = requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
         if not resp.ok:
             print(f"Telegram API error {resp.status_code}: {resp.text}")
+            return False
+        return True
     except requests.RequestException as e:
         print(f"Error sending Telegram message: {e}")
+        return False
 
 
 def _parse_cap(value):
@@ -253,8 +256,10 @@ def main():
             print(f"  {sym}: {pct:.1f}% off low")
 
     summary = build_summary(len(symbols), scanned, uptrends, pulled, hits, used_fallback)
-    send_telegram_message(summary)
-    print("\nSummary message sent.")
+    if send_telegram_message(summary):
+        print("\nSummary message sent.")
+    else:
+        print("\nSummary message FAILED to send (check TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).")
 
 
 if __name__ == "__main__":
