@@ -18,7 +18,8 @@ MIN_MARKET_CAP = 1_000_000_000
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 
 # --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
-DROP_IF_REVENUE_DECLINING = True   # remove a candidate if revenue is clearly shrinking YoY
+REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
+                                   # (drops both declining and unverifiable 'n/a' names)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
 # Fallback universe (curated large caps) used only if the live screener fetch
@@ -261,8 +262,9 @@ def enrich_hits(hits):
     enriched = []
     for sym, r in hits:
         status, rev_label = revenue_growth(sym)
-        if DROP_IF_REVENUE_DECLINING and status == "no":
-            print(f"  drop {sym}: {rev_label} (revenue declining)")
+        if REQUIRE_CONFIRMED_GROWTH and status != "yes":
+            reason = "declining" if status == "no" else "growth unverifiable"
+            print(f"  drop {sym}: {rev_label} ({reason})")
             continue
         news = fetch_news(sym)
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news))
