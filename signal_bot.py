@@ -1,5 +1,7 @@
 import os
 import time
+import xml.etree.ElementTree as ET
+from urllib.parse import quote_plus
 import requests
 import pandas as pd
 import yfinance as yf
@@ -7,9 +9,17 @@ import yfinance as yf
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/120.0.0.0 Safari/537.36")
+
 # --- Universe: every US-listed stock worth more than $1B market cap ---
 MIN_MARKET_CAP = 1_000_000_000
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
+
+# --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
+DROP_IF_REVENUE_DECLINING = True   # remove a candidate if revenue is clearly shrinking YoY
+NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
 # Fallback universe (curated large caps) used only if the live screener fetch
 # fails, so the bot still produces a scan instead of going dark.
@@ -191,27 +201,110 @@ def download_chunk(chunk, retries=3):
     return None
 
 
+def revenue_growth(sym):
+    """Year-over-year revenue check: latest quarter vs the same quarter a year ago.
+    Returns (status, label) where status is 'yes' (growing), 'no' (declining), or
+    'unknown' (not enough data). Only called for stocks that pass the chart screen."""
+    try:
+        t = yf.Ticker(sym)
+        df = None
+        for attr in ("quarterly_income_stmt", "quarterly_financials"):
+            df = getattr(t, attr, None)
+            if df is not None and not df.empty and "Total Revenue" in df.index:
+                break
+            df = None
+        if df is None:
+            return ("unknown", "rev n/a")
+        rev = df.loc["Total Revenue"].dropna()
+        # columns are quarter-end dates; sort newest-first
+        rev = rev.sort_index(ascending=False)
+        if len(rev) < 5:
+            return ("unknown", "rev n/a")          # need 5 quarters for a YoY compare
+        latest = float(rev.iloc[0]); year_ago = float(rev.iloc[4])
+        if year_ago == 0:
+            return ("unknown", "rev n/a")
+        pct = (latest - year_ago) / abs(year_ago) * 100
+        if latest > year_ago:
+            return ("yes", f"rev +{pct:.0f}% YoY")
+        return ("no", f"rev {pct:.0f}% YoY")
+    except Exception:
+        return ("unknown", "rev n/a")
+
+
+def fetch_news(sym, limit=NEWS_PER_STOCK):
+    """Top recent headlines from Google News (aggregates Reuters, Bloomberg, CNBC,
+    etc.). Returns a list of headline strings. Best-effort: [] on any failure."""
+    url = (f"https://news.google.com/rss/search?q={quote_plus(sym + ' stock')}"
+           f"&hl=en-US&gl=US&ceid=US:en")
+    try:
+        resp = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=10)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        titles = []
+        for item in root.findall(".//item")[:limit]:
+            title = (item.findtext("title") or "").strip()
+            if title:
+                titles.append(title)
+        return titles
+    except Exception:
+        return []
+
+
+def news_link(sym):
+    return f"https://news.google.com/search?q={quote_plus(sym + ' stock')}"
+
+
+def enrich_hits(hits):
+    """For each chart-screen hit, add the YoY revenue status and recent news.
+    Drops names whose revenue is clearly declining (if DROP_IF_REVENUE_DECLINING).
+    Returns a list of dicts."""
+    enriched = []
+    for sym, r in hits:
+        status, rev_label = revenue_growth(sym)
+        if DROP_IF_REVENUE_DECLINING and status == "no":
+            print(f"  drop {sym}: {rev_label} (revenue declining)")
+            continue
+        news = fetch_news(sym)
+        enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news))
+        time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
+    return enriched
+
+
 def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     if scanned == 0:
         return (f"⚠️ Stock bot: scan FAILED — 0 of {universe_n} symbols "
                 f"returned data (likely rate-limited or a network error). No reliable "
                 f"signal today.")
+    rev_icon = {"yes": "✅", "no": "⚠️", "unknown": "❓"}
     lines = [f"\U0001F4CA Daily scan: {scanned} scanned | {uptrends} uptrends | "
              f"{pulled} pulled back | {len(hits)} BUY setup(s)"]
     if used_fallback:
         lines.append("(used fallback symbol list — live universe fetch failed)")
-    if hits:
+    if not hits:
+        lines.append("\nNo buy setups today (in an uptrend, pulled back to a higher low, "
+                     "bouncing on volume, with growing revenue).")
+        return "\n".join(lines)
+
+    lines.append("")
+    lines.append("\U0001F6A8 BUY setups (uptrend + higher-low bounce + growing revenue):")
+    for h in hits:
+        r = h["r"]
         lines.append("")
-        lines.append("\U0001F6A8 BUY setups:")
-        for sym, r in hits[:30]:
-            lines.append(f"{sym}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${r['resistance']:.2f}")
-        if len(hits) > 30:
-            lines.append(f"...and {len(hits) - 30} more")
-        lines.append("")
-        lines.append("Set stop + take-profit in Plus500.")
-    else:
-        lines.append("No buy setups today.")
-    return "\n".join(lines)
+        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
+                     f"target ${r['resistance']:.2f}")
+        lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
+        for title in h["news"]:
+            lines.append(f"  • {title}")
+        if h["news"]:
+            lines.append(f"  More: {news_link(h['sym'])}")
+    lines.append("")
+    lines.append("Set stop + take-profit in Plus500. Not financial advice — check the news before buying.")
+
+    # Telegram hard-caps messages at 4096 chars; trim from the bottom if needed.
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900].rsplit("\n", 1)[0] + "\n…(truncated — see full list in the run log)"
+    return text
 
 
 def main():
@@ -246,17 +339,24 @@ def main():
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 
-    print(f"\nFUNNEL: scanned {scanned} | uptrends {uptrends} | pulled back {pulled} | BUY setups {len(hits)}")
+    print(f"\nFUNNEL: scanned {scanned} | uptrends {uptrends} | pulled back {pulled} | "
+          f"chart setups {len(hits)}")
 
-    if hits:
-        for sym, r in hits:
-            print(f"  BUY {sym}: ${r['price']:.2f}  stop ${r['stop']:.2f}  target ${r['resistance']:.2f}")
+    # Fundamental gate (YoY revenue) + news, only for the handful of chart hits.
+    enriched = enrich_hits(hits)
+
+    if enriched:
+        print(f"\nBUY setups after revenue gate ({len(enriched)}):")
+        for h in enriched:
+            r = h["r"]
+            print(f"  BUY {h['sym']}: ${r['price']:.2f}  stop ${r['stop']:.2f}  "
+                  f"target ${r['resistance']:.2f}  [{h['rev_label']}]")
     if watchlist:
         print("\nWatchlist (pulled back, awaiting confirmation):")
         for sym, pct in watchlist[:10]:
             print(f"  {sym}: {pct:.1f}% off low")
 
-    summary = build_summary(len(symbols), scanned, uptrends, pulled, hits, used_fallback)
+    summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback)
     if send_telegram_message(summary):
         print("\nSummary message sent.")
     else:
