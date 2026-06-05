@@ -1,4 +1,24 @@
 {
   "open": [],
-  "closed": []
+  "closed": [
+    {
+      "sym": "TCBK",
+      "entry": 50.84,
+      "exit": 35.02,
+      "amount": 2033.6,
+      "shares": 40,
+      "pnl_pct": -31.12,
+      "pnl_usd": -632.8,
+      "outcome": "loss",
+      "date": "2026-06-05",
+      "close_date": "2026-06-05",
+      "note": "Demo trade. Stop loss was not placed as a live order; ran to -31% vs the strategy's intended -4% stop (~$48.8). Regional bank (sector concentration risk).",
+      "setup": {
+        "rev_status": "unknown",
+        "stop_placed": false,
+        "intended_stop": 48.81,
+        "sector": "regional banks"
+      }
+    }
+  ]
 }
