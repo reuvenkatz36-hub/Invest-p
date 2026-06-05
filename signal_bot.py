@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import pandas as pd
 import yfinance as yf
@@ -6,9 +7,13 @@ import yfinance as yf
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# ~190 of the most liquid S&P names. (Not literally all 503 - the bottom names
-# are smaller/less liquid, add rate-limit load, and rarely give cleaner setups.)
-SYMBOLS = [
+# --- Universe: every US-listed stock worth more than $1B market cap ---
+MIN_MARKET_CAP = 1_000_000_000
+NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
+
+# Fallback universe (curated large caps) used only if the live screener fetch
+# fails, so the bot still produces a scan instead of going dark.
+FALLBACK_SYMBOLS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","GOOG","META","TSLA","AVGO","ORCL","CRM","ADBE",
     "AMD","CSCO","ACN","INTC","IBM","QCOM","TXN","INTU","NOW","AMAT","ADI","MU",
     "LRCX","KLAC","SNPS","CDNS","PANW","ANET","CRWD","FTNT","NXPI","MCHP","ON","ROP",
@@ -33,9 +38,10 @@ ENTRY_MIN_PCT = 3.0    # price must be 3-8% above the recent higher low
 ENTRY_MAX_PCT = 8.0
 NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tight pullback)
 RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not a stale one)
-VOL_MULT = 1.0         # bounce-day volume must beat the 20-day average by this multiple
+VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
 CHUNK = 50             # download this many tickers at a time
+CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
 
 def send_telegram_message(message: str) -> None:
@@ -46,6 +52,57 @@ def send_telegram_message(message: str) -> None:
             print(f"Telegram API error {resp.status_code}: {resp.text}")
     except requests.RequestException as e:
         print(f"Error sending Telegram message: {e}")
+
+
+def _parse_cap(value):
+    """Parse a market-cap string like '1,234,567,890' into a float (or None)."""
+    if value is None:
+        return None
+    s = str(value).replace(",", "").replace("$", "").strip()
+    if not s or s.upper() in ("N/A", "NA", "--"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def get_universe():
+    """All US-listed stocks with market cap >= MIN_MARKET_CAP, from the NASDAQ
+    screener. Returns (symbols, used_fallback). Falls back to FALLBACK_SYMBOLS
+    on any failure so the scan still runs."""
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/120.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    params = {"tableonly": "true", "limit": "0", "download": "true"}
+    try:
+        resp = requests.get(NASDAQ_SCREENER_URL, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        rows = resp.json()["data"]["rows"]
+    except Exception as e:
+        print(f"Universe fetch failed ({e}); using fallback list of {len(FALLBACK_SYMBOLS)}.")
+        return list(FALLBACK_SYMBOLS), True
+
+    syms = []
+    for row in rows:
+        cap = _parse_cap(row.get("marketCap"))
+        if cap is None or cap < MIN_MARKET_CAP:
+            continue
+        sym = (row.get("symbol") or "").strip().upper()
+        if not sym or any(c in sym for c in "^$"):   # skip warrants/units/odd tickers
+            continue
+        sym = sym.replace("/", "-").replace(".", "-")  # Yahoo uses '-' for share classes
+        syms.append(sym)
+
+    syms = sorted(set(syms))
+    if not syms:
+        print("Screener returned no symbols above cap; using fallback list.")
+        return list(FALLBACK_SYMBOLS), True
+    return syms, False
 
 
 def find_pivots(highs, lows, left_k, right_k):
@@ -95,8 +152,8 @@ def evaluate(highs, lows, closes, vols):
     pct = (price - low_last[1]) / low_last[1] * 100
     in_zone = ENTRY_MIN_PCT <= pct <= ENTRY_MAX_PCT
     turning_up = closes[-1] > closes[-2]
-    avg_vol = sum(vols[-20:]) / 20.0
-    volume_ok = avg_vol > 0 and vols[-1] > VOL_MULT * avg_vol         # volume confirmation
+    prev_avg_vol = sum(vols[-21:-1]) / 20.0                          # prior 20 days, excludes today
+    volume_ok = prev_avg_vol > 0 and vols[-1] > VOL_MULT * prev_avg_vol  # volume confirmation
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
     fires = pulled_back and turning_up and volume_ok
@@ -116,19 +173,56 @@ def get_ohlcv(data, sym):
         return None
 
 
+def download_chunk(chunk, retries=3):
+    """Download a chunk with retries/backoff. Returns the DataFrame or None."""
+    for attempt in range(retries):
+        try:
+            data = yf.download(chunk, period="1y", interval="1d", group_by="ticker",
+                               auto_adjust=True, progress=False, threads=True)
+            if data is not None and len(data) > 0:
+                return data
+        except Exception as e:
+            print(f"  chunk download error (attempt {attempt + 1}): {e}")
+        time.sleep(2 ** attempt)
+    return None
+
+
+def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
+    if scanned == 0:
+        return (f"⚠️ Stock bot: scan FAILED — 0 of {universe_n} symbols "
+                f"returned data (likely rate-limited or a network error). No reliable "
+                f"signal today.")
+    lines = [f"\U0001F4CA Daily scan: {scanned} scanned | {uptrends} uptrends | "
+             f"{pulled} pulled back | {len(hits)} BUY setup(s)"]
+    if used_fallback:
+        lines.append("(used fallback symbol list — live universe fetch failed)")
+    if hits:
+        lines.append("")
+        lines.append("\U0001F6A8 BUY setups:")
+        for sym, r in hits[:30]:
+            lines.append(f"{sym}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${r['resistance']:.2f}")
+        if len(hits) > 30:
+            lines.append(f"...and {len(hits) - 30} more")
+        lines.append("")
+        lines.append("Set stop + take-profit in Plus500.")
+    else:
+        lines.append("No buy setups today.")
+    return "\n".join(lines)
+
+
 def main():
-    print(f"Scanning {len(SYMBOLS)} stocks...")
+    symbols, used_fallback = get_universe()
+    print(f"Scanning {len(symbols)} stocks (market cap >= ${MIN_MARKET_CAP:,})"
+          f"{' [fallback list]' if used_fallback else ''}...")
     scanned = uptrends = pulled = 0
     hits = []
     watchlist = []
 
-    for i in range(0, len(SYMBOLS), CHUNK):
-        chunk = SYMBOLS[i:i + CHUNK]
-        try:
-            data = yf.download(chunk, period="1y", interval="1d", group_by="ticker",
-                               auto_adjust=True, progress=False, threads=True)
-        except Exception as e:
-            print(f"Chunk download failed ({e}); skipping {len(chunk)} tickers.")
+    for i in range(0, len(symbols), CHUNK):
+        chunk = symbols[i:i + CHUNK]
+        data = download_chunk(chunk)
+        if data is None:
+            print(f"Chunk {i // CHUNK + 1} failed after retries; skipping {len(chunk)} tickers.")
             continue
         for sym in chunk:
             ohlcv = get_ohlcv(data, sym)
@@ -146,6 +240,7 @@ def main():
                     watchlist.append((sym, r["pct"]))
             if r["fires"]:
                 hits.append((sym, r))
+        time.sleep(CHUNK_PAUSE)
 
     print(f"\nFUNNEL: scanned {scanned} | uptrends {uptrends} | pulled back {pulled} | BUY setups {len(hits)}")
 
@@ -157,12 +252,10 @@ def main():
         for sym, pct in watchlist[:10]:
             print(f"  {sym}: {pct:.1f}% off low")
 
-    if hits:
-        lines = [f"\U0001F6A8 {len(hits)} BUY setup(s) today:\n"]
-        for sym, r in hits:
-            lines.append(f"{sym}: ${r['price']:.2f}  | stop ${r['stop']:.2f}  | target ${r['resistance']:.2f}")
-        lines.append("\nSet stop + take-profit in Plus500.")
-        send_telegram_message("\n".join(lines))
-        print("\nSummary message sent.")
-    else:
-        print("\nNo buy setups across the universe today.")
+    summary = build_summary(len(symbols), scanned, uptrends, pulled, hits, used_fallback)
+    send_telegram_message(summary)
+    print("\nSummary message sent.")
+
+
+if __name__ == "__main__":
+    main()

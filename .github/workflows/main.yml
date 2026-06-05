@@ -8,6 +8,7 @@ on:
 jobs:
   run-signal-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -24,5 +25,4 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SYMBOL: AAPL
         run: python signal_bot.py
