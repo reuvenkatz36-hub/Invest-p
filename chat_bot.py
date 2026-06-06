@@ -80,14 +80,14 @@ def delete_webhook():
         pass
 
 
-def get_updates(offset):
+def get_updates(offset, wait=0):
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    params = {"timeout": 0}
+    params = {"timeout": wait}   # >0 = long-poll: Telegram holds the request until a message arrives
     if offset is not None:
         params["offset"] = offset
     for attempt in range(3):
         try:
-            r = requests.get(url, params=params, timeout=25)
+            r = requests.get(url, params=params, timeout=wait + 15)
         except requests.RequestException as e:
             print(f"getUpdates network error: {e}")
             time.sleep(3)
@@ -382,18 +382,21 @@ HELP = ("I can analyze stocks and track your trades. Try:\n"
 
 def handle_message(text, trades):
     low = text.strip().lower()
-    if low in ("help", "/help", "start", "/start"):
+    has = lambda *words: any(re.search(r"\b" + w + r"\b", low) for w in words)
+    if low in ("help", "/help", "start", "/start", "commands", "/commands", "menu") or has("help") \
+            or "what can you do" in low:
         return HELP
-    if low in ("positions", "/positions", "portfolio"):
-        return handle_positions(trades)
-    if low in ("history", "/history", "trades"):
-        return handle_history(trades)
-    if low in ("learn", "/learn", "why"):
-        return handle_learn(trades)
+    # explicit trades win first, so "log my buy" style messages aren't caught by the menus below
     trade = parse_trade(text)
     if trade:
         action, sym, price, amount, shares = trade
         return handle_sell(sym, price, trades) if action == "sell" else handle_buy(sym, price, amount, shares, trades)
+    if has("positions", "position", "portfolio", "holdings", "holding"):
+        return handle_positions(trades)
+    if has("history") or "my trades" in low or "track record" in low or "closed trades" in low:
+        return handle_history(trades)
+    if has("learn", "lessons", "patterns", "mistakes") or low == "why":
+        return handle_learn(trades)
     sym = extract_ticker(text)
     if not sym:
         return "I didn't catch a stock symbol. " + HELP
@@ -412,9 +415,16 @@ def main():
     processed = 0
     delete_webhook()   # ensure polling isn't blocked by a stale webhook
 
-    while True:
-        updates = get_updates(offset)
-        if not updates:   # None (conflict) or [] (drained) -> done for this cycle
+    # GitHub's scheduler can only start a run every few minutes (and is often late),
+    # so each run stays awake for a short window, long-polling Telegram, to answer
+    # messages that arrive while it's up instead of making them wait for the next run.
+    window = int(os.environ.get("POLL_SECONDS", "120"))
+    deadline = time.time() + window
+    first = True
+    while time.time() < deadline:
+        updates = get_updates(offset, wait=0 if first else 20)
+        first = False
+        if updates is None:   # 409 conflict -> stop, next run retries
             break
         for u in updates:
             offset = u["update_id"] + 1
@@ -432,6 +442,10 @@ def main():
                 print(f"handler error: {e}")
             send(msg["chat"]["id"], reply)
             processed += 1
+        # persist after each batch so a timeout never re-answers or loses progress
+        state["offset"] = offset
+        save_json(STATE_FILE, state)
+        save_json(TRADES_FILE, trades)
 
     state["offset"] = offset
     save_json(STATE_FILE, state)
