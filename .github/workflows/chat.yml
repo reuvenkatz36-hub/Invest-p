@@ -1,11 +1,8 @@
 name: Stock Chat Bot
 
 on:
-  # Auto-polling disabled: the chat bot now runs as chat_daemon.py on the user's
-  # own machine (instant replies). Re-enable this schedule only if you stop running
-  # the daemon — and never run both at once (two pollers cause Telegram 409s).
-  # schedule:
-  #   - cron: "*/5 * * * *"
+  schedule:
+    - cron: "*/5 * * * *"     # poll Telegram every 5 minutes (runs on GitHub's cloud, no computer needed)
   workflow_dispatch: {}
 
 # Don't let two polls run at once (they'd double-answer messages).
