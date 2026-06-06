@@ -22,6 +22,16 @@
         "sector": "regional banks",
         "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
       }
+    },
+    {
+      "sym": "DAC",
+      "entry": 131.58,
+      "amount": 1973.7,
+      "shares": 15,
+      "date": "2026-06-06",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": []
