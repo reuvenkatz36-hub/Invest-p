@@ -210,44 +210,72 @@ def parse_trade(text):
         action = "buy"
     else:
         return None
+
+    # optional share quantity: "bought 15 dac", "buy 40 tcbk", "15 shares of dac"
+    shares = None
+    m = re.search(r"\b(?:bought|buy|bot|sold|sell)\s+(\d+)\b", low)
+    if m:
+        shares = int(m.group(1))
+    else:
+        m = re.search(r"\b(\d+)\s+shares?\b", low)
+        if m:
+            shares = int(m.group(1))
+
     sym = None
-    m = re.search(r"\b([A-Z]{1,5}(?:\.[A-Z])?)\b", text)   # prefer an uppercase ticker
+    m = re.search(r"\b([A-Z]{1,5}(?:\.[A-Z])?)\b", text)   # prefer an explicit uppercase ticker
     if m and m.group(1) not in STOPWORDS:
         sym = m.group(1)
-    if sym is None:
-        m = re.search(r"\b(?:bought|buy|bot|sold|sell)\s+([A-Za-z]{1,5})\b", low)
+    if sym is None:   # "bought [15] dac" / "buy dac" (ticker right after the verb, qty optional)
+        m = re.search(r"\b(?:bought|buy|bot|sold|sell)\s+(?:\d+\s+)?([A-Za-z]{1,5})\b", low)
         if m and m.group(1).upper() not in STOPWORDS:
             sym = m.group(1).upper()
     if sym is None:
         m = re.search(r"\b(?:of|in)\s+([A-Za-z]{1,5})\b", low)
-        if m:
+        if m and m.group(1).upper() not in STOPWORDS:
             sym = m.group(1).upper()
-    price = None
-    m = re.search(r"(?:at|@|for)\s*\$?(\d+(?:\.\d+)?)", low)
-    if m:
-        price = float(m.group(1))
-    else:
-        nums = re.findall(r"\$?(\d+(?:\.\d+)?)", text)
-        if nums:
-            price = float(nums[-1])
+
+    # explicit dollar position size: "for $10"
     amount = None
     m = re.search(r"for\s*\$(\d+(?:\.\d+)?)", low)
     if m:
         amount = float(m.group(1))
+
+    # price per share: "at 114", "@ 114.50", or a bare "for 131.58" (no $ = a price, not a size)
+    price = None
+    m = re.search(r"(?:at|@)\s*\$?(\d+(?:\.\d+)?)", low)
+    if m:
+        price = float(m.group(1))
+    if price is None:
+        m = re.search(r"\bfor\s+(\d+(?:\.\d+)?)\b", low)
+        if m:
+            price = float(m.group(1))
+    if price is None:   # last resort: last number in the message that isn't the share count
+        nums = [n for n in re.findall(r"\$?(\d+(?:\.\d+)?)", text)
+                if shares is None or float(n) != float(shares)]
+        if nums:
+            price = float(nums[-1])
+
     if not sym or price is None:
         return None
-    return action, sym, price, amount
+    return action, sym, price, amount, shares
 
 
 # ---------- handlers ----------
-def handle_buy(sym, price, amount, trades):
+def handle_buy(sym, price, amount, shares, trades):
     r, rev_status, rev_label, _ = analyze_symbol(sym)
+    if amount is None and shares is not None:   # derive $ size from shares × price
+        amount = round(shares * price, 2)
     trades.setdefault("open", []).append({
-        "sym": sym, "entry": price, "amount": amount,
+        "sym": sym, "entry": price, "amount": amount, "shares": shares,
         "date": datetime.date.today().isoformat(),
         "setup": setup_snapshot(r, rev_status),
     })
-    extra = f" (${amount:.0f})" if amount else ""
+    size = []
+    if shares:
+        size.append(f"{shares} sh")
+    if amount:
+        size.append(f"${amount:.0f}")
+    extra = f" ({', '.join(size)})" if size else ""
     note = ""
     if r is not None and not r["fires"]:
         note = "\n⚠️ Heads up: this isn't a full buy signal on our strategy right now."
@@ -364,8 +392,8 @@ def handle_message(text, trades):
         return handle_learn(trades)
     trade = parse_trade(text)
     if trade:
-        action, sym, price, amount = trade
-        return handle_sell(sym, price, trades) if action == "sell" else handle_buy(sym, price, amount, trades)
+        action, sym, price, amount, shares = trade
+        return handle_sell(sym, price, trades) if action == "sell" else handle_buy(sym, price, amount, shares, trades)
     sym = extract_ticker(text)
     if not sym:
         return "I didn't catch a stock symbol. " + HELP
