@@ -262,6 +262,12 @@ def parse_trade(text):
 
 # ---------- handlers ----------
 def handle_buy(sym, price, amount, shares, trades):
+    # Don't double-log: if an identical open position already exists (same symbol, entry
+    # and share count), treat a repeat as a no-op instead of creating a duplicate.
+    for p in trades.get("open", []):
+        if p.get("sym") == sym and abs((p.get("entry") or 0) - price) < 1e-6 and p.get("shares") == shares:
+            return (f"ℹ️ You already have an open {sym} position at ${price:.2f} on record — "
+                    "I didn't add a duplicate. Send 'positions' to see your holdings.")
     r, rev_status, rev_label, _ = analyze_symbol(sym)
     if amount is None and shares is not None:   # derive $ size from shares × price
         amount = round(shares * price, 2)
@@ -380,17 +386,29 @@ HELP = ("I can analyze stocks and track your trades. Try:\n"
         "• help  — this message")
 
 
+def apply_trade(trade, trades):
+    action, sym, price, amount, shares = trade
+    if action == "sell":
+        return handle_sell(sym, price, trades)
+    return handle_buy(sym, price, amount, shares, trades)
+
+
 def handle_message(text, trades):
     low = text.strip().lower()
     has = lambda *words: any(re.search(r"\b" + w + r"\b", low) for w in words)
     if low in ("help", "/help", "start", "/start", "commands", "/commands", "menu") or has("help") \
             or "what can you do" in low:
         return HELP
-    # explicit trades win first, so "log my buy" style messages aren't caught by the menus below
+    # explicit trades win first, so "log my buy" style messages aren't caught by the menus below.
+    # A single message can hold several trades on separate lines ("bought X\nalso bought Y") —
+    # handle each so none get silently dropped.
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    parsed = [parse_trade(ln) for ln in lines]
+    if sum(1 for p in parsed if p) >= 2:
+        return "\n".join(apply_trade(p, trades) for p in parsed if p)
     trade = parse_trade(text)
     if trade:
-        action, sym, price, amount, shares = trade
-        return handle_sell(sym, price, trades) if action == "sell" else handle_buy(sym, price, amount, shares, trades)
+        return apply_trade(trade, trades)
     if has("positions", "position", "portfolio", "holdings", "holding"):
         return handle_positions(trades)
     if has("history") or "my trades" in low or "track record" in low or "closed trades" in low:
