@@ -2,7 +2,10 @@ name: Stock Chat Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"     # poll Telegram every 5 minutes (runs on GitHub's cloud, no computer needed)
+    # Each run stays awake ~55 min long-polling Telegram, so a fresh run is almost always
+    # live and replies land in seconds. Hourly cron relaunches it (offset :07 to dodge
+    # GitHub's top-of-hour scheduling load). Public repo => Actions minutes are free.
+    - cron: "7 * * * *"
   workflow_dispatch: {}
 
 # Don't let two polls run at once (they'd double-answer messages).
@@ -16,7 +19,7 @@ permissions:
 jobs:
   chat:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 70
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -34,6 +37,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional — unlocks the AI opinion
+          POLL_SECONDS: "3300"   # stay awake ~55 min per run for near-instant replies
         run: python chat_bot.py
 
       - name: Persist trade journal & state
