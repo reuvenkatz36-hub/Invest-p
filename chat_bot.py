@@ -54,6 +54,65 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
              "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW"}
 
+# The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
+# you when a new candidate repeats the same mistake. Each entry is
+#   (human label, was-flag-present-in-this-past-trade?, is-flag-present-in-candidate-now?)
+# `in_loss` reads a stored setup snapshot; `in_now` reads a fresh analysis (r, rev_status).
+LOSS_FLAGS = [
+    ("no full buy signal",
+     lambda s: s.get("fires") is False, lambda r, rev: not r["fires"]),
+    ("below-average bounce volume",
+     lambda s: s.get("volume_ok") is False, lambda r, rev: not r["volume_ok"]),
+    ("unconfirmed/declining revenue",
+     lambda s: s.get("rev_status") not in (None, "yes"), lambda r, rev: rev != "yes"),
+    ("a shaky (non-)uptrend",
+     lambda s: s.get("is_uptrend") is False, lambda r, rev: not r["is_uptrend"]),
+    ("entry outside the 3-8% buy zone",
+     lambda s: s.get("in_zone") is False, lambda r, rev: not r["in_zone"]),
+]
+
+
+def loss_patterns(trades):
+    """Recurring red flags across the user's losing trades.
+    Returns (list of '3/4 losses had X' strings, number_of_losses)."""
+    losses = [t for t in trades.get("closed", []) if t.get("outcome") == "loss"]
+    n = len(losses)
+    out = []
+    for label, in_loss, _ in LOSS_FLAGS:
+        cnt = sum(1 for t in losses if in_loss(t.get("setup", {})))
+        if cnt >= 2 and cnt / n >= 0.5:          # showed up in at least half (and 2+) of losses
+            out.append(f"{cnt}/{n} losses had {label}")
+    return out, n
+
+
+def memory_warnings(sym, r, rev_status, trades, limit=3):
+    """Compare a candidate against the user's own past losses. Returns plain-language
+    warnings — empty if nothing rhymes with a previous mistake."""
+    losses = [t for t in trades.get("closed", []) if t.get("outcome") == "loss"]
+    warns = []
+    lost_syms = [t["sym"] for t in losses]
+    if sym in lost_syms:                          # you've been burned by this exact ticker
+        warns.append(f"You've taken a loss on {sym} before ({lost_syms.count(sym)}×) — "
+                     "make sure this setup is genuinely different.")
+    if r is not None and losses:                  # this candidate repeats a recurring red flag
+        n = len(losses)
+        for label, in_loss, in_now in LOSS_FLAGS:
+            cnt = sum(1 for t in losses if in_loss(t.get("setup", {})))
+            try:
+                now_bad = in_now(r, rev_status)
+            except Exception:
+                now_bad = False
+            if cnt >= 2 and cnt / n >= 0.5 and now_bad:
+                warns.append(f"{cnt} of your {n} losses had {label} — and {sym} has it too right now.")
+    return warns[:limit]
+
+
+def memory_block(sym, r, rev_status, trades):
+    warns = memory_warnings(sym, r, rev_status, trades)
+    if not warns:
+        return ""
+    return "\n\n\U0001F9E0 From your own history:\n" + "\n".join(f"• {w}" for w in warns)
+
 
 # ---------- persistence ----------
 def load_json(path, default):
@@ -174,11 +233,15 @@ def ai_opinion(sym, r, rev_label, news, trades):
     losses = [t for t in closed if t.get("outcome") == "loss"]
     hist = (f"{len(closed)} closed trades, {len(losses)} losses. "
             f"Recent: {[ (t['sym'], t.get('outcome')) for t in closed[-5:] ]}") if closed else "no trade history yet"
+    patterns, _ = loss_patterns(trades)
+    patt_str = "; ".join(patterns) if patterns else "no clear recurring pattern yet"
     user = (f"Stock: {sym}\nComputed indicators: {facts}\n"
             f"Recent news headlines: {news[:3]}\n"
-            f"My trading history: {hist}\n\n"
+            f"My trading history: {hist}\n"
+            f"My recurring loss patterns: {patt_str}\n\n"
             "In 4-6 sentences give your honest opinion on this stock for my strategy: does it fit, "
-            "what's the risk, and would you wait or act? Plain language.")
+            "what's the risk, and would you wait or act? If this stock repeats any of my recurring "
+            "loss patterns, explicitly call it out. Plain language.")
     try:
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
@@ -291,6 +354,7 @@ def handle_buy(sym, price, amount, shares, trades):
     note = ""
     if r is not None and not r["fires"]:
         note = "\n⚠️ Heads up: this isn't a full buy signal on our strategy right now."
+    note += memory_block(sym, r, rev_status, trades)   # remind you of similar past losses
     return f"\U0001F4DD Recorded BUY {sym} @ ${price:.2f}{extra}. Good luck!{note}"
 
 
@@ -361,6 +425,11 @@ def handle_learn(trades):
         lines.append(f"• {off_system}/{len(losses)} losses were bought WITHOUT a full buy signal")
         lines.append(f"• {bad_rev}/{len(losses)} losses had unconfirmed/declining revenue")
         lines.append(f"• {no_vol}/{len(losses)} losses lacked above-average bounce volume")
+        patterns, _ = loss_patterns(trades)
+        if patterns:
+            lines.append("")
+            lines.append("\U0001F9E0 I'll now warn you when a new stock repeats these:")
+            lines += [f"• {p}" for p in patterns]
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         try:
@@ -422,6 +491,7 @@ STRATEGY_TEXT = (
 def analyze_and_report(sym, trades):
     r, rev_status, rev_label, news = analyze_symbol(sym)
     report = rule_report(sym, r, rev_status, rev_label, news)
+    report += memory_block(sym, r, rev_status, trades)   # warn about repeats of past mistakes
     ai = ai_opinion(sym, r, rev_label, news, trades)
     if ai:
         report += "\n\n\U0001F916 " + ai
