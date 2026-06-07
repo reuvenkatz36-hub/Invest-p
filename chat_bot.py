@@ -3,15 +3,18 @@
 Runs every few minutes from GitHub Actions: polls Telegram for new messages,
 answers them, and persists a trade journal back into the repo. Talk to it like:
 
-  NVDA                      -> full analysis of NVDA
-  what about AFL?           -> full analysis of AFL
-  bought AFL at 114.50      -> records an open position
-  bought AFL at 114 for $10 -> records position sized at $10
-  sold AFL at 120           -> closes it, logs the win/loss
-  positions                 -> your open positions + live P&L
-  history                   -> closed trades, win/loss record
-  learn                     -> what your losing trades had in common (+ AI review)
-  help                      -> this list
+  NVDA / what about AFL?    -> full stock analysis vs the strategy
+  /news NVDA                -> aggregated headlines from many free sources
+  /price NVDA               -> quick price + day move + 52w range
+  /earnings NVDA            -> next earnings date
+  bought 10 AFL at 114.50   -> records an open position (/buy works too)
+  sold AFL at 120           -> closes it, logs the win/loss (/sell works too)
+  positions / /stats        -> open positions, live P&L, portfolio summary
+  /remove NVDA              -> delete a position logged by mistake
+  history / learn           -> closed trades; what your losers had in common
+  /watch NVDA, /watchlist, /scan -> personal watchlist + on-demand scan
+  /strategy                 -> explain the rules
+  help / /help              -> the full command list (also shown in the "/" menu)
 
 Analysis is rule-based (same indicators as the daily screener). If an
 ANTHROPIC_API_KEY secret is present, a written AI opinion is added on top.
@@ -46,7 +49,10 @@ STRATEGY_BRIEF = (
 STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "IN", "A", "AN",
              "SHARE", "SHARES", "STOCK", "STOCKS", "ABOUT", "THINK", "WHAT", "DO", "YOU", "IS",
              "IT", "ON", "AND", "ME", "MY", "TO", "WORTH", "GOOD", "BAD", "HEY", "HI", "PLEASE",
-             "LOOK", "ANALYZE", "ANALYSE", "CHECK", "POSITIONS", "HISTORY", "LEARN", "HELP", "USD", "I"}
+             "LOOK", "ANALYZE", "ANALYSE", "CHECK", "POSITIONS", "HISTORY", "LEARN", "HELP", "USD", "I",
+             "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
+             "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
+             "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW"}
 
 
 # ---------- persistence ----------
@@ -375,15 +381,251 @@ def handle_learn(trades):
     return "\n".join(lines)
 
 
-HELP = ("I can analyze stocks and track your trades. Try:\n"
-        "• NVDA  — analyze a stock\n"
-        "• what about AFL?  — same thing\n"
-        "• bought AFL at 114.50  — record a buy (add 'for $10' to size it)\n"
-        "• sold AFL at 120  — close it & log win/loss\n"
-        "• positions  — open trades + live P&L\n"
-        "• history  — closed trades\n"
-        "• learn  — what your losing trades have in common\n"
-        "• help  — this message")
+# Canonical command list — drives /help AND the native Telegram "/" menu (setMyCommands).
+# (command, one-line description). Keep descriptions single-line and < 256 chars.
+COMMANDS = [
+    ("help",       "Show every command I understand"),
+    ("analyze",    "Analyze a stock vs the strategy — /analyze NVDA"),
+    ("news",       "Latest news from many sources — /news NVDA"),
+    ("price",      "Quick price & day move — /price NVDA"),
+    ("earnings",   "Next earnings date — /earnings NVDA"),
+    ("buy",        "Log a buy — /buy 10 NVDA at 240"),
+    ("sell",       "Log a sell — /sell NVDA at 255"),
+    ("positions",  "Your open positions + live P&L"),
+    ("remove",     "Delete a position logged by mistake — /remove NVDA"),
+    ("history",    "Closed trades & win/loss record"),
+    ("stats",      "Portfolio summary: invested, P&L, win rate"),
+    ("learn",      "What your losing trades have in common"),
+    ("watch",      "Add a stock to your watchlist — /watch NVDA"),
+    ("unwatch",    "Remove from watchlist — /unwatch NVDA"),
+    ("watchlist",  "Show your watchlist"),
+    ("scan",       "Scan watchlist + positions for buy setups"),
+    ("strategy",   "Explain the trading strategy in plain English"),
+]
+
+HELP = ("🤖 Everything I can do:\n\n"
+        + "\n".join(f"/{c} — {d}" for c, d in COMMANDS)
+        + "\n\nNo slash needed for the basics — you can just type a ticker (NVDA), "
+          "or talk normally: 'bought 10 nvda at 240', 'positions', 'news on AFL'.")
+
+STRATEGY_TEXT = (
+    "📈 The strategy in plain English:\n"
+    "1) UPTREND — the stock makes higher highs AND higher lows.\n"
+    "2) PULLBACK — it dips back to a higher low (doesn't break the trend).\n"
+    "3) BOUNCE — it's 3–8% up off that low and turning up on above-average volume.\n"
+    "4) REVENUE growing year-over-year.\n\n"
+    "When all 4 line up → BUY. Stop-loss ~4% below entry; target is the resistance line.\n"
+    "One position at a time, cut losers fast. Not financial advice — always check the news first."
+)
+
+
+def analyze_and_report(sym, trades):
+    r, rev_status, rev_label, news = analyze_symbol(sym)
+    report = rule_report(sym, r, rev_status, rev_label, news)
+    ai = ai_opinion(sym, r, rev_label, news, trades)
+    if ai:
+        report += "\n\n\U0001F916 " + ai
+    return report
+
+
+def quick_eval(sym):
+    """Lightweight analyze for /scan: chart + revenue, but skips the news fetch."""
+    try:
+        data = yf.download(sym, period="1y", interval="1d", auto_adjust=True,
+                           progress=False, threads=False)
+    except Exception:
+        return None, "unknown"
+    ohlcv = sb.get_ohlcv(data, sym)
+    if ohlcv is None:
+        return None, "unknown"
+    rev_status, _ = sb.revenue_growth(sym)
+    return sb.evaluate(*ohlcv), rev_status
+
+
+def handle_news(sym):
+    items = sb.fetch_news_items(sym, limit=8)
+    if not items:
+        return f"No news found for {sym} right now."
+    lines = [f"\U0001F4F0 News for {sym}:"]
+    for it in items:
+        src = f"  [{it['source']}]" if it.get("source") else ""
+        lines.append(f"• {it['title']}{src}")
+    lines.append(f"\nMore: {sb.news_link(sym)}")
+    return "\n".join(lines)
+
+
+def handle_quote(sym):
+    try:
+        data = yf.download(sym, period="1y", interval="1d", auto_adjust=True,
+                           progress=False, threads=False)
+        closes = data["Close"].dropna()
+        last = float(closes.iloc[-1])
+        prev = float(closes.iloc[-2]) if len(closes) > 1 else last
+        chg = (last - prev) / prev * 100 if prev else 0.0
+        hi = float(data["High"].dropna().max())
+        lo = float(data["Low"].dropna().min())
+        arrow = "\U0001F7E2" if chg >= 0 else "\U0001F534"
+        return (f"\U0001F4B5 {sym}: ${last:.2f}  {arrow} {chg:+.1f}% (vs prev close)\n"
+                f"52-week range: ${lo:.2f} – ${hi:.2f}")
+    except Exception:
+        return f"Couldn't fetch a price for {sym}."
+
+
+def handle_earnings(sym):
+    try:
+        import pandas as pd
+        df = yf.Ticker(sym).get_earnings_dates(limit=12)
+        if df is not None and len(df):
+            now = pd.Timestamp.now(tz=df.index.tz)
+            future = sorted(d for d in df.index if d >= now)
+            if future:
+                return f"\U0001F4C5 {sym}: next earnings ~ {future[0].date().isoformat()}"
+            past = sorted(df.index)
+            return f"\U0001F4C5 {sym}: no upcoming date posted; last reported {past[-1].date().isoformat()}"
+    except Exception:
+        pass
+    return f"Couldn't find an earnings date for {sym}."
+
+
+def handle_remove(sym, trades):
+    opens = trades.get("open", [])
+    idx = next((i for i, t in enumerate(opens) if t["sym"] == sym), None)
+    if idx is None:
+        return f"No open {sym} position to remove."
+    opens.pop(idx)
+    return f"\U0001F5D1 Removed {sym} from your open positions (no win/loss logged)."
+
+
+def handle_stats(trades):
+    opens = trades.get("open", [])
+    closed = trades.get("closed", [])
+    invested = sum(p.get("amount") or 0 for p in opens)
+    cur, priced_all = 0.0, True
+    for p in opens:
+        try:
+            data = yf.download(p["sym"], period="5d", interval="1d", auto_adjust=True,
+                               progress=False, threads=False)
+            last = float(data["Close"].dropna().iloc[-1])
+            sh = p.get("shares")
+            if sh is None and p.get("amount") and p.get("entry"):
+                sh = p["amount"] / p["entry"]
+            cur += last * (sh or 0)
+        except Exception:
+            priced_all = False
+    wins = [t for t in closed if t.get("outcome") == "win"]
+    realized = sum(t.get("pnl_usd") or 0 for t in closed)
+    lines = ["\U0001F4CA Portfolio summary:",
+             f"• Open positions: {len(opens)}"]
+    if invested:
+        lines.append(f"• Invested (open): ${invested:,.0f}")
+        if priced_all and cur:
+            lines.append(f"• Current value: ${cur:,.0f} ({cur - invested:+,.0f} unrealized)")
+    lines.append(f"• Closed: {len(closed)} | {len(wins)} wins | {len(closed) - len(wins)} losses")
+    if closed:
+        lines.append(f"• Win rate: {len(wins) / len(closed) * 100:.0f}%")
+        lines.append(f"• Realized P&L: ${realized:+,.0f}")
+    return "\n".join(lines)
+
+
+def handle_watch_add(sym, trades):
+    wl = trades.setdefault("watch", [])
+    if sym in wl:
+        return f"{sym} is already on your watchlist."
+    wl.append(sym)
+    return f"\U0001F440 Added {sym} to your watchlist ({len(wl)} total). Send /scan to check them."
+
+
+def handle_watch_remove(sym, trades):
+    wl = trades.setdefault("watch", [])
+    if sym not in wl:
+        return f"{sym} isn't on your watchlist."
+    wl.remove(sym)
+    return f"Removed {sym} from your watchlist ({len(wl)} left)."
+
+
+def handle_watchlist(trades):
+    wl = trades.get("watch", [])
+    if not wl:
+        return "Your watchlist is empty. Add one with /watch NVDA."
+    return "\U0001F440 Watchlist: " + ", ".join(wl) + "\nSend /scan to check them for buy setups."
+
+
+def handle_scan(trades):
+    syms = list(dict.fromkeys([p["sym"] for p in trades.get("open", [])] + trades.get("watch", [])))
+    if not syms:
+        return "Nothing to scan yet. Add stocks with /watch NVDA (or log a buy)."
+    lines = [f"\U0001F50E Scanning {len(syms)}: {', '.join(syms)}"]
+    for sym in syms[:15]:
+        r, rev_status = quick_eval(sym)
+        if r is None:
+            lines.append(f"• {sym}: no data")
+            continue
+        if r["fires"] and rev_status == "yes":
+            tag = "\U0001F7E2 STRONG buy setup"
+        elif r["fires"]:
+            tag = "\U0001F7E2 buy setup (revenue unconfirmed)"
+        elif r["pulled_back"]:
+            tag = "\U0001F7E1 watch — pulled back, awaiting bounce"
+        elif r["is_uptrend"]:
+            tag = "⚪ uptrend, no buy point"
+        else:
+            tag = "\U0001F534 no setup"
+        lines.append(f"• {sym} ${r['price']:.2f}: {tag}")
+    if len(syms) > 15:
+        lines.append(f"…and {len(syms) - 15} more (showing first 15).")
+    return "\n".join(lines)
+
+
+def handle_command(cmd, arg, trades):
+    """Dispatch an explicit /slash command. `arg` is the text after the command."""
+    sym = extract_ticker(arg) if arg else None
+    if cmd in ("help", "commands", "start", "menu", "?"):
+        return HELP
+    if cmd in ("analyze", "analyse", "stock", "check", "a"):
+        return analyze_and_report(sym, trades) if sym else "Usage: /analyze NVDA"
+    if cmd in ("news", "headlines"):
+        return handle_news(sym) if sym else "Usage: /news NVDA"
+    if cmd in ("price", "quote", "p"):
+        return handle_quote(sym) if sym else "Usage: /price NVDA"
+    if cmd in ("earnings", "earning"):
+        return handle_earnings(sym) if sym else "Usage: /earnings NVDA"
+    if cmd in ("buy", "bought"):
+        t = parse_trade("bought " + arg)
+        return apply_trade(t, trades) if t else "Usage: /buy 10 NVDA at 240"
+    if cmd in ("sell", "sold"):
+        t = parse_trade("sold " + arg)
+        return apply_trade(t, trades) if t else "Usage: /sell NVDA at 255"
+    if cmd in ("positions", "portfolio", "holdings", "pos"):
+        return handle_positions(trades)
+    if cmd in ("remove", "delete", "forget", "rm"):
+        return handle_remove(sym, trades) if sym else "Usage: /remove NVDA"
+    if cmd in ("history", "trades", "hist"):
+        return handle_history(trades)
+    if cmd in ("stats", "summary", "stat"):
+        return handle_stats(trades)
+    if cmd == "learn":
+        return handle_learn(trades)
+    if cmd == "watch":
+        return handle_watch_add(sym, trades) if sym else "Usage: /watch NVDA"
+    if cmd in ("unwatch", "unwatchlist"):
+        return handle_watch_remove(sym, trades) if sym else "Usage: /unwatch NVDA"
+    if cmd in ("watchlist", "watches", "wl"):
+        return handle_watchlist(trades)
+    if cmd == "scan":
+        return handle_scan(trades)
+    if cmd in ("strategy", "rules"):
+        return STRATEGY_TEXT
+    return f"Unknown command /{cmd}. Send /help to see everything I can do."
+
+
+def set_my_commands():
+    """Register the command list with Telegram so the in-app '/' menu shows them."""
+    cmds = [{"command": c, "description": d} for c, d in COMMANDS]
+    try:
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/setMyCommands",
+                      json={"commands": cmds}, timeout=15)
+    except requests.RequestException as e:
+        print(f"setMyCommands failed: {e}")
 
 
 def apply_trade(trade, trades):
@@ -394,11 +636,20 @@ def apply_trade(trade, trades):
 
 
 def handle_message(text, trades):
-    low = text.strip().lower()
+    raw = text.strip()
+    # ----- explicit /slash commands take priority -----
+    if raw.startswith("/"):
+        parts = raw[1:].split(maxsplit=1)
+        if parts:
+            return handle_command(parts[0].lower(), parts[1].strip() if len(parts) > 1 else "", trades)
+    low = raw.lower()
     has = lambda *words: any(re.search(r"\b" + w + r"\b", low) for w in words)
-    if low in ("help", "/help", "start", "/start", "commands", "/commands", "menu") or has("help") \
-            or "what can you do" in low:
+    if low in ("help", "start", "commands", "menu") or has("help") or "what can you do" in low:
         return HELP
+    if has("news", "headlines"):                      # "news on AFL", "AFL news"
+        sym = extract_ticker(low.replace("news", " ").replace("headlines", " "))
+        if sym:
+            return handle_news(sym)
     # explicit trades win first, so "log my buy" style messages aren't caught by the menus below.
     # A single message can hold several trades on separate lines ("bought X\nalso bought Y") —
     # handle each so none get silently dropped.
@@ -415,15 +666,16 @@ def handle_message(text, trades):
         return handle_history(trades)
     if has("learn", "lessons", "patterns", "mistakes") or low == "why":
         return handle_learn(trades)
+    if has("strategy", "rules"):
+        return STRATEGY_TEXT
+    if has("scan"):
+        return handle_scan(trades)
+    if has("stats", "summary"):
+        return handle_stats(trades)
     sym = extract_ticker(text)
     if not sym:
         return "I didn't catch a stock symbol. " + HELP
-    r, rev_status, rev_label, news = analyze_symbol(sym)
-    report = rule_report(sym, r, rev_status, rev_label, news)
-    ai = ai_opinion(sym, r, rev_label, news, trades)
-    if ai:
-        report += "\n\n\U0001F916 " + ai
-    return report
+    return analyze_and_report(sym, trades)
 
 
 def main():
@@ -432,6 +684,7 @@ def main():
     offset = state.get("offset")
     processed = 0
     delete_webhook()   # ensure polling isn't blocked by a stale webhook
+    set_my_commands()  # populate the in-app "/" command menu
 
     # GitHub's scheduler can only start a run every few minutes (and is often late),
     # so each run stays awake for a short window, long-polling Telegram, to answer
