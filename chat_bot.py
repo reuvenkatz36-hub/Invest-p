@@ -452,28 +452,31 @@ def handle_learn(trades):
 
 # Canonical command list — drives /help AND the native Telegram "/" menu (setMyCommands).
 # (command, one-line description). Keep descriptions single-line and < 256 chars.
+# (command, clean menu description, optional example). The example is shown only in /help —
+# the in-app "/" menu uses just the description so it doesn't repeat a sample ticker everywhere.
 COMMANDS = [
-    ("help",       "Show every command I understand"),
-    ("analyze",    "Analyze a stock vs the strategy — /analyze NVDA"),
-    ("news",       "Latest news from many sources — /news NVDA"),
-    ("price",      "Quick price & day move — /price NVDA"),
-    ("earnings",   "Next earnings date — /earnings NVDA"),
-    ("buy",        "Log a buy — /buy 10 NVDA at 240"),
-    ("sell",       "Log a sell — /sell NVDA at 255"),
-    ("positions",  "Your open positions + live P&L"),
-    ("remove",     "Delete a position logged by mistake — /remove NVDA"),
-    ("history",    "Closed trades & win/loss record"),
-    ("stats",      "Portfolio summary: invested, P&L, win rate"),
-    ("learn",      "What your losing trades have in common"),
-    ("watch",      "Add a stock to your watchlist — /watch NVDA"),
-    ("unwatch",    "Remove from watchlist — /unwatch NVDA"),
-    ("watchlist",  "Show your watchlist"),
-    ("scan",       "Scan watchlist + positions for buy setups"),
-    ("strategy",   "Explain the trading strategy in plain English"),
+    ("help",       "Show every command I understand",            ""),
+    ("analyze",    "Analyze a stock vs the strategy",            "/analyze AAPL"),
+    ("news",       "Latest news for a stock",                    "/news AAPL"),
+    ("price",      "Quick price & day move",                     "/price AAPL"),
+    ("earnings",   "Next earnings date for a stock",             "/earnings AAPL"),
+    ("buy",        "Log a buy",                                  "/buy 10 AAPL at 240"),
+    ("sell",       "Log a sell",                                 "/sell AAPL at 255"),
+    ("positions",  "Your open positions + live P&L",             ""),
+    ("remove",     "Delete a position logged by mistake",        "/remove AAPL"),
+    ("history",    "Closed trades & win/loss record",            ""),
+    ("stats",      "Portfolio summary: invested, P&L, win rate", ""),
+    ("learn",      "What your losing trades have in common",     ""),
+    ("watch",      "Add a stock to your watchlist",              "/watch AAPL"),
+    ("unwatch",    "Remove a stock from your watchlist",         "/unwatch AAPL"),
+    ("watchlist",  "Show your watchlist",                        ""),
+    ("scan",       "Scan watchlist + positions for buy setups",  ""),
+    ("strategy",   "Explain the trading strategy",               ""),
 ]
 
 HELP = ("🤖 Everything I can do:\n\n"
-        + "\n".join(f"/{c} — {d}" for c, d in COMMANDS)
+        + "\n".join(f"/{c} — {d}" + (f"  (e.g. {ex})" if ex else "") for c, d, ex in COMMANDS)
+        + "\n\nNote: tickers in the examples (AAPL) are just samples — use ANY stock you want."
         + "\n\nNo slash needed for the basics — you can just type a ticker (NVDA), "
           "or talk normally: 'bought 10 nvda at 240', 'positions', 'news on AFL'.")
 
@@ -690,7 +693,7 @@ def handle_command(cmd, arg, trades):
 
 def set_my_commands():
     """Register the command list with Telegram so the in-app '/' menu shows them."""
-    cmds = [{"command": c, "description": d} for c, d in COMMANDS]
+    cmds = [{"command": c, "description": d} for c, d, _ex in COMMANDS]
     try:
         requests.post(f"https://api.telegram.org/bot{TOKEN}/setMyCommands",
                       json={"commands": cmds}, timeout=15)
