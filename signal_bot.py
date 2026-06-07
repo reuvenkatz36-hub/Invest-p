@@ -1,6 +1,8 @@
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
+from itertools import zip_longest
 from urllib.parse import quote_plus
 import requests
 import pandas as pd
@@ -235,23 +237,60 @@ def revenue_growth(sym):
         return ("unknown", "rev n/a")
 
 
+# Every free, no-API-key stock-news feed we pull from. Google News alone already
+# aggregates Reuters, Bloomberg, CNBC, WSJ, MarketWatch, etc.; the rest add breadth.
+# {q} = url-encoded "<SYM> stock", {sym} = url-encoded ticker. All best-effort.
+NEWS_FEEDS = [
+    ("Google News", "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"),
+    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s={sym}&region=US&lang=en-US"),
+    ("Nasdaq", "https://www.nasdaq.com/feed/rssoutbound?symbol={sym}"),
+    ("Bing News", "https://www.bing.com/news/search?q={q}&format=rss"),
+    ("Seeking Alpha", "https://seekingalpha.com/api/sa/combined/{sym}.xml"),
+]
+
+
+def _norm_title(title):
+    return re.sub(r"[^a-z0-9]", "", title.lower())[:60]
+
+
+def fetch_news_items(sym, limit=NEWS_PER_STOCK, per_feed=4):
+    """Aggregate recent headlines across every feed in NEWS_FEEDS, dedupe near-identical
+    titles, and interleave sources for variety. Returns a list of dicts:
+    {title, link, source}. Best-effort — a feed that fails is just skipped."""
+    q = quote_plus(sym + " stock")
+    esym = quote_plus(sym)
+    per_feed_items = []
+    for source, tmpl in NEWS_FEEDS:
+        url = tmpl.format(q=q, sym=esym)
+        feed_items = []
+        try:
+            resp = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=6)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+            for item in root.findall(".//item")[:per_feed]:
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                if title:
+                    feed_items.append({"title": title, "link": link, "source": source})
+        except Exception:
+            pass
+        per_feed_items.append(feed_items)
+
+    items, seen = [], set()
+    for tier in zip_longest(*per_feed_items):       # round-robin across sources
+        for it in tier:
+            if it is None:
+                continue
+            key = _norm_title(it["title"])
+            if key and key not in seen:
+                seen.add(key)
+                items.append(it)
+    return items[:limit] if limit else items
+
+
 def fetch_news(sym, limit=NEWS_PER_STOCK):
-    """Top recent headlines from Google News (aggregates Reuters, Bloomberg, CNBC,
-    etc.). Returns a list of headline strings. Best-effort: [] on any failure."""
-    url = (f"https://news.google.com/rss/search?q={quote_plus(sym + ' stock')}"
-           f"&hl=en-US&gl=US&ceid=US:en")
-    try:
-        resp = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=10)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-        titles = []
-        for item in root.findall(".//item")[:limit]:
-            title = (item.findtext("title") or "").strip()
-            if title:
-                titles.append(title)
-        return titles
-    except Exception:
-        return []
+    """Backward-compatible: top headlines as plain strings (used by the daily scan)."""
+    return [it["title"] for it in fetch_news_items(sym, limit)]
 
 
 def news_link(sym):
