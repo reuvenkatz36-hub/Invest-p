@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: write             # needed to commit the trade journal back
+  actions: write              # needed to launch the daily scan on demand (/daily)
 
 jobs:
   chat:
@@ -38,6 +39,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional — unlocks the AI opinion
           POLL_SECONDS: "3300"   # stay awake ~55 min per run for near-instant replies
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # lets /daily dispatch the daily-scan workflow
+          DAILY_WORKFLOW: "main.yml"
         run: python chat_bot.py
 
       - name: Persist trade journal & state

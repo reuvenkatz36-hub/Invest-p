@@ -52,7 +52,7 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "LOOK", "ANALYZE", "ANALYSE", "CHECK", "POSITIONS", "HISTORY", "LEARN", "HELP", "USD", "I",
              "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
-             "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW"}
+             "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL"}
 
 # The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
 # you when a new candidate repeats the same mistake. Each entry is
@@ -471,6 +471,7 @@ COMMANDS = [
     ("unwatch",    "Remove a stock from your watchlist",         "/unwatch AAPL"),
     ("watchlist",  "Show your watchlist",                        ""),
     ("scan",       "Scan watchlist + positions for buy setups",  ""),
+    ("daily",      "Run the full daily market scan now",         ""),
     ("strategy",   "Explain the trading strategy",               ""),
 ]
 
@@ -649,6 +650,36 @@ def handle_scan(trades):
     return "\n".join(lines)
 
 
+def trigger_daily_scan():
+    """Launch the full daily market-scan workflow (signal_bot) via the GitHub API,
+    so it runs as its own job and posts results here when done. Returns (ok, error)."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    wf = os.environ.get("DAILY_WORKFLOW", "main.yml")
+    if not token or not repo:
+        return False, "the on-demand scan isn't configured (no GitHub token in this environment)."
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/dispatches"
+    try:
+        resp = requests.post(url, json={"ref": "main"}, timeout=15, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        if resp.status_code in (201, 204):
+            return True, None
+        return False, f"GitHub said {resp.status_code}: {resp.text[:140]}"
+    except requests.RequestException as e:
+        return False, str(e)
+
+
+def handle_daily():
+    ok, err = trigger_daily_scan()
+    if ok:
+        return ("\U0001F501 Started the full daily market scan. It runs in the background and takes "
+                "a few minutes — the results will arrive here as a separate message when it's done.")
+    return f"Couldn't start the daily scan: {err}"
+
+
 def handle_command(cmd, arg, trades):
     """Dispatch an explicit /slash command. `arg` is the text after the command."""
     sym = extract_ticker(arg) if arg else None
@@ -686,6 +717,8 @@ def handle_command(cmd, arg, trades):
         return handle_watchlist(trades)
     if cmd == "scan":
         return handle_scan(trades)
+    if cmd in ("daily", "today", "dailyscan", "marketscan", "fullscan"):
+        return handle_daily()
     if cmd in ("strategy", "rules"):
         return STRATEGY_TEXT
     return f"Unknown command /{cmd}. Send /help to see everything I can do."
@@ -741,6 +774,8 @@ def handle_message(text, trades):
         return handle_learn(trades)
     if has("strategy", "rules"):
         return STRATEGY_TEXT
+    if "daily" in low or "market scan" in low or "scan the market" in low or "full scan" in low:
+        return handle_daily()
     if has("scan"):
         return handle_scan(trades)
     if has("stats", "summary"):
