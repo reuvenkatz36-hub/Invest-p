@@ -22,6 +22,16 @@
         "sector": "regional banks",
         "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
       }
+    },
+    {
+      "sym": "WRBY",
+      "entry": 24.06,
+      "amount": 1924.8,
+      "shares": 80,
+      "date": "2026-06-09",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": []
