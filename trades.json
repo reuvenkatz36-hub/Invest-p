@@ -42,6 +42,16 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "FCFS",
+      "entry": 225.59,
+      "amount": 4962.98,
+      "shares": 22,
+      "date": "2026-06-12",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": []
