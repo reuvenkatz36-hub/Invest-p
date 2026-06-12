@@ -32,6 +32,16 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "IRBM",
+      "entry": 48.63,
+      "amount": 2042.46,
+      "shares": 42,
+      "date": "2026-06-12",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": []
