@@ -1,21 +1,23 @@
 name: Stock Chat Bot
 
 on:
+  # The bot keeps ITSELF alive: each run polls Telegram for ~55 min, then dispatches the
+  # next run (see the "Relaunch" step) — a continuous chain so replies are near-instant.
+  # The cron below is only a cold-start safety net in case the chain ever dies (GitHub's
+  # scheduler is unreliable, so we don't depend on it). Public repo => Actions is free.
   schedule:
-    # Each run stays awake ~55 min long-polling Telegram, so a fresh run is almost always
-    # live and replies land in seconds. Hourly cron relaunches it (offset :07 to dodge
-    # GitHub's top-of-hour scheduling load). Public repo => Actions minutes are free.
-    - cron: "7 * * * *"
+    - cron: "17 */3 * * *"
   workflow_dispatch: {}
 
-# Don't let two polls run at once (they'd double-answer messages).
+# One poller at a time. cancel-in-progress: true means a relaunch/cron/manual run replaces
+# the current one instead of queueing — so the chain can never multiply into many runs.
 concurrency:
   group: stock-chat-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write             # needed to commit the trade journal back
-  actions: write              # needed to launch the daily scan on demand (/daily)
+  actions: write              # needed to launch the daily scan (/daily) and relaunch itself
 
 jobs:
   chat:
@@ -44,13 +46,26 @@ jobs:
         run: python chat_bot.py
 
       - name: Persist trade journal & state
+        if: ${{ success() || failure() }}
         run: |
           git config user.name "stock-chat-bot"
           git config user.email "actions@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
           git add bot_state.json trades.json || true
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
             git commit -m "Update chat bot state [skip ci]"
-            git push
+            git push || true
           fi
+
+      - name: Relaunch (keep the bot alive)
+        if: success()
+        run: |
+          sleep 3
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/chat.yml/dispatches" \
+            -d '{"ref":"main"}'
