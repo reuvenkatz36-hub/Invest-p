@@ -23,6 +23,7 @@ W_PE        = 1.5
 W_PEG       = 1.5
 W_FORWARD   = 1.5
 W_MOAT      = 1.5
+W_PS        = 1.5
 W_INSIDER   = 1.0
 W_RETURNS   = 1.0
 
@@ -46,12 +47,31 @@ def _money(x):
     return f"${x:,.0f}"
 
 
+def _rev_growth_from_statements(t):
+    """Statement-based YoY revenue growth (latest quarter vs same quarter a year ago) —
+    the same method the daily scan shows, so the X-ray stays consistent with it."""
+    try:
+        for attr in ("quarterly_income_stmt", "quarterly_financials"):
+            df = getattr(t, attr, None)
+            if df is not None and not df.empty and "Total Revenue" in df.index:
+                rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
+                if len(rev) >= 5 and float(rev.iloc[4]) != 0:
+                    return (float(rev.iloc[0]) - float(rev.iloc[4])) / abs(float(rev.iloc[4]))
+    except Exception:
+        pass
+    return None
+
+
 def _fetch(sym):
     t = yf.Ticker(sym)
     try:
         info = t.info or {}
     except Exception:
         info = {}
+    if not info.get("revenueGrowth"):               # keep revenue consistent with the daily scan
+        rg = _rev_growth_from_statements(t)
+        if rg is not None:
+            info["revenueGrowth"] = rg
     out = {"info": info, "buyback": None, "insider_net": None}
     try:                                            # buybacks: cash spent repurchasing stock
         cf = t.cashflow
@@ -106,6 +126,19 @@ def evaluate(data):
     peg = g("trailingPegRatio") or g("pegRatio")
     add("תמחור", "מחיר ביחס לצמיחה (PEG)", _num(peg), f3(peg is not None and 0 < peg <= 1.5, peg is not None), W_PEG,
         "המחיר מוצדק לעומת קצב הצמיחה" if (peg and 0 < peg <= 1.5) else "יקרה ביחס לכמה שהיא צומחת")
+    ps = g("priceToSalesTrailing12Months")
+    if ps is None:
+        ps_flag = "na"
+    elif ps < 10:
+        ps_flag = "green"
+    elif ps > 20:
+        ps_flag = "red"                              # >20x sales = speculative (catches pre-revenue hype)
+    else:
+        ps_flag = "na"
+    add("תמחור", "מחיר ביחס למכירות (P/S)", _num(ps), ps_flag, W_PS,
+        "תמחור הגיוני מול ההכנסות" if ps_flag == "green" else
+        ("ספקולטיבי מאוד — השווי גבוה פי עשרות מההכנסות בפועל" if ps_flag == "red"
+         else "תמחור גבוה-בינוני מול ההכנסות"))
 
     # ---- Layer 3: תזרים מזומנים ----
     ocf = g("operatingCashflow")
@@ -164,14 +197,36 @@ def evaluate(data):
         "שוליים גבוהים + תשואה גבוהה = יתרון תחרותי קשה להעתקה" if moat_ok else "אין סימן ברור ליתרון תחרותי בנתונים")
 
     # ---- score: weighted, over the flags we actually know ----
+    total = sum(it["weight"] for it in items)
     earned = sum(it["weight"] for it in items if it["flag"] == "green")
     possible = sum(it["weight"] for it in items if it["flag"] in ("green", "red"))
     score = round(10 * earned / possible) if possible else 0
-    verdict = ("מצוין" if score >= 8 else "טוב" if score >= 6 else "בינוני" if score >= 4 else "חלש")
+    coverage = possible / total if total else 0.0
 
+    flagof = lambda part: next((it["flag"] for it in items if part in it["label"]), "na")
+    net_red = flagof("רווח נקי") == "red"
+    fcf_red = flagof("FCF") == "red"
+    ps_red = flagof("P/S") == "red"
+
+    # Hard caps so an obviously risky stock can never read as "excellent":
+    caps = []
+    if net_red and fcf_red:                 # losing money AND burning cash = speculative
+        score = min(score, 4); caps.append("מפסידה כסף ושורפת מזומן")
+    if ps_red:                              # priced at a huge multiple of actual sales
+        score = min(score, 6); caps.append("תמחור ספקולטיבי (מכפיל מכירות עצום)")
+    # Sparse data must not inflate the score — a 10/10 off 1-2 known flags is meaningless.
+    if coverage < 0.30:
+        score = min(score, 4); confidence = "very_low"
+    elif coverage < 0.50:
+        score = min(score, 6); confidence = "low"
+    else:
+        confidence = "ok"
+
+    verdict = ("מצוין" if score >= 8 else "טוב" if score >= 6 else "בינוני" if score >= 4 else "חלש")
     opportunity, danger = _bottom_line(items)
     return {"items": items, "score": score, "verdict": verdict,
-            "opportunity": opportunity, "danger": danger,
+            "opportunity": opportunity, "danger": danger, "caps": caps,
+            "confidence": confidence, "coverage": round(coverage, 2),
             "sector": info.get("sector"), "known": possible > 0}
 
 
@@ -200,8 +255,12 @@ def _bottom_line(items):
     else:
         opp = "אין כרגע זרז צמיחה בולט בנתונים — ההזדמנות תלויה בעיקר בתמונה הטכנית."
 
-    if red("חוב מול מזומן"):
+    if red("רווח נקי") and red("FCF"):
+        dgr = "מפסידה כסף ושורפת מזומן — כדי לשרוד היא מגייסת הון ומדללת אתכם בשקט."
+    elif red("חוב מול מזומן"):
         dgr = "החוב גדול מהמזומן — רבעון חלש או עליית ריבית עלולים ללחוץ אותם בשקט."
+    elif red("P/S"):
+        dgr = "תמחור ספקולטיבי — השווי גבוה פי עשרות מההכנסות בפועל; כל אכזבה תפיל אותה חזק."
     elif red("איכות הרווח"):
         dgr = "הרווח קיים על הנייר אבל פחות ממנו נכנס כמזומן — סימן אזהרה שרבים מפספסים."
     elif red("רווח נקי"):
@@ -236,6 +295,15 @@ def xray(sym):
         return {"ok": False, "sym": sym}
 
 
+def _confidence_note(res):
+    c = res.get("confidence")
+    if c == "very_low":
+        return "⚠️ נתונים פונדמנטליים חלקיים מאוד — הציון מוגבל ולא אמין; תתייחס בזהירות רבה."
+    if c == "low":
+        return "⚠️ נתונים פונדמנטליים חלקיים — הציון נחתך כלפי מטה ופחות אמין."
+    return ""
+
+
 def xray_text(sym, res=None):
     res = res or xray(sym)
     if not res.get("ok"):
@@ -243,6 +311,9 @@ def xray_text(sym, res=None):
     sector = f"  ({res['sector']})" if res.get("sector") else ""
     lines = [f"🩻 רנטגן פונדמנטלי — {sym}{sector}",
              f"ציון בריאות: {res['score']}/10 — {res['verdict']}"]
+    note = _confidence_note(res)
+    if note:
+        lines.append(note)
     for layer in _LAYERS:
         lines.append("")
         lines.append("🔬 " + _LAYER_TITLE[layer])
@@ -256,6 +327,10 @@ def xray_short(sym, res=None):
     res = res or xray(sym)
     if not res.get("ok"):
         return None
-    return (f"🩻 ציון בריאות פונדמנטלי: {res['score']}/10 ({res['verdict']})\n"
+    note = _confidence_note(res)
+    head = f"🩻 ציון בריאות פונדמנטלי: {res['score']}/10 ({res['verdict']})"
+    if note:
+        head += "\n" + note
+    return (f"{head}\n"
             f"💡 ההזדמנות: {res['opportunity']}\n"
             f"⚠️ הסכנה: {res['danger']}")
