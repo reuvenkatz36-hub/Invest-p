@@ -1,17 +1,6 @@
 {
   "open": [
     {
-      "sym": "DAC",
-      "entry": 131.58,
-      "amount": 1973.7,
-      "shares": 15,
-      "date": "2026-06-05",
-      "setup": {
-        "rev_status": "unknown",
-        "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
-      }
-    },
-    {
       "sym": "TCBK",
       "entry": 50.84,
       "amount": 2033.6,
@@ -24,26 +13,6 @@
       }
     },
     {
-      "sym": "WRBY",
-      "entry": 24.06,
-      "amount": 1924.8,
-      "shares": 80,
-      "date": "2026-06-09",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
-      "sym": "IRBM",
-      "entry": 48.63,
-      "amount": 2042.46,
-      "shares": 42,
-      "date": "2026-06-12",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
       "sym": "FCFS",
       "entry": 225.59,
       "amount": 4962.98,
@@ -52,7 +21,79 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "KWR",
+      "entry": 151.22,
+      "amount": null,
+      "shares": null,
+      "date": "2026-06-19",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
-  "closed": []
+  "closed": [
+    {
+      "sym": "DAC",
+      "entry": 131.58,
+      "amount": 1973.7,
+      "shares": 15,
+      "date": "2026-06-05",
+      "setup": {
+        "rev_status": "unknown",
+        "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
+      },
+      "exit": 124.62,
+      "pnl_pct": -5.289557683538537,
+      "outcome": "loss",
+      "pnl_usd": -104.4000000000001,
+      "close_date": "2026-06-19"
+    },
+    {
+      "sym": "CWEN",
+      "entry": 38.64,
+      "amount": null,
+      "shares": null,
+      "date": "2026-06-19",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 37.0,
+      "pnl_pct": -4.244306418219463,
+      "outcome": "loss",
+      "pnl_usd": null,
+      "close_date": "2026-06-19"
+    },
+    {
+      "sym": "WRBY",
+      "entry": 24.06,
+      "amount": 1924.8,
+      "shares": 80,
+      "date": "2026-06-09",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 25.96,
+      "pnl_pct": 7.896924355777232,
+      "outcome": "win",
+      "pnl_usd": 152.00000000000017,
+      "close_date": "2026-06-19"
+    },
+    {
+      "sym": "IRDM",
+      "entry": 48.63,
+      "amount": null,
+      "shares": null,
+      "date": "2026-06-19",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 45.03,
+      "pnl_pct": -7.402837754472551,
+      "outcome": "loss",
+      "pnl_usd": null,
+      "close_date": "2026-06-19"
+    }
+  ]
 }
