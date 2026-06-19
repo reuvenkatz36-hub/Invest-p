@@ -30,6 +30,7 @@ import requests
 import yfinance as yf
 
 import signal_bot as sb   # reuse evaluate / revenue_growth / fetch_news / get_ohlcv
+import xray               # fundamental 6-layer X-ray + health score
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 OWNER_CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
@@ -52,7 +53,8 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "LOOK", "ANALYZE", "ANALYSE", "CHECK", "POSITIONS", "HISTORY", "LEARN", "HELP", "USD", "I",
              "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
-             "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL"}
+             "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL",
+             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN"}
 
 # The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
 # you when a new candidate repeats the same mistake. Each entry is
@@ -457,6 +459,7 @@ def handle_learn(trades):
 COMMANDS = [
     ("help",       "Show every command I understand",            ""),
     ("analyze",    "Analyze a stock vs the strategy",            "/analyze AAPL"),
+    ("xray",       "Full fundamental X-ray + health score (1-10)", "/xray AAPL"),
     ("news",       "Latest news for a stock",                    "/news AAPL"),
     ("price",      "Quick price & day move",                     "/price AAPL"),
     ("earnings",   "Next earnings date for a stock",             "/earnings AAPL"),
@@ -496,6 +499,9 @@ def analyze_and_report(sym, trades):
     r, rev_status, rev_label, news = analyze_symbol(sym)
     report = rule_report(sym, r, rev_status, rev_label, news)
     report += memory_block(sym, r, rev_status, trades)   # warn about repeats of past mistakes
+    xs = xray.xray_short(sym)                            # fundamental health score + bottom line
+    if xs:
+        report += "\n\n" + xs + "\n(שלח /xray " + sym + " לרנטגן המלא)"
     ai = ai_opinion(sym, r, rev_label, news, trades)
     if ai:
         report += "\n\n\U0001F916 " + ai
@@ -719,6 +725,10 @@ def handle_command(cmd, arg, trades):
         return handle_scan(trades)
     if cmd in ("daily", "today", "dailyscan", "marketscan", "fullscan"):
         return handle_daily()
+    if cmd in ("xray", "x-ray", "rentgen", "fundamentals", "deep"):
+        if not sym:
+            return "Usage: /xray AAPL"
+        return xray.xray_text(sym) or f"לא הצלחתי למשוך מספיק נתונים פונדמנטליים על {sym}."
     if cmd in ("strategy", "rules"):
         return STRATEGY_TEXT
     return f"Unknown command /{cmd}. Send /help to see everything I can do."
@@ -774,6 +784,10 @@ def handle_message(text, trades):
         return handle_learn(trades)
     if has("strategy", "rules"):
         return STRATEGY_TEXT
+    if has("xray", "x-ray", "fundamentals") or "רנטגן" in low:
+        sym = extract_ticker(low.replace("xray", " ").replace("x-ray", " ").replace("fundamentals", " "))
+        if sym:
+            return xray.xray_text(sym) or f"לא הצלחתי למשוך מספיק נתונים פונדמנטליים על {sym}."
     if "daily" in low or "market scan" in low or "scan the market" in low or "full scan" in low:
         return handle_daily()
     if has("scan"):

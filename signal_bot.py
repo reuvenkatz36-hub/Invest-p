@@ -309,7 +309,12 @@ def enrich_hits(hits):
             print(f"  drop {sym}: {rev_label} ({reason})")
             continue
         news = fetch_news(sym)
-        enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news))
+        try:
+            import xray
+            xr = xray.xray(sym)
+        except Exception:
+            xr = None
+        enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
         time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
     return enriched
 
@@ -330,13 +335,20 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
         return "\n".join(lines)
 
     lines.append("")
-    lines.append("\U0001F6A8 BUY setups (uptrend + higher-low bounce + growing revenue):")
+    lines.append("\U0001F6A8 BUY setups (ranked by fundamental health score):")
+    hits = sorted(hits, key=lambda h: (h.get("xray") or {}).get("score", 0), reverse=True)
     for h in hits:
         r = h["r"]
         lines.append("")
         lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
                      f"target ${r['resistance']:.2f}")
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
+        xr = h.get("xray")
+        if xr and xr.get("ok"):
+            lines.append(f"  🩻 ציון בריאות: {xr['score']}/10 ({xr['verdict']})")
+            lines.append(f"  💡 הזדמנות: {xr['opportunity']}")
+            lines.append(f"  ⚠️ סכנה: {xr['danger']}")
+            lines.append(f"  לרנטגן המלא בצ'אט: /xray {h['sym']}")
         for title in h["news"]:
             lines.append(f"  • {title}")
         if h["news"]:
