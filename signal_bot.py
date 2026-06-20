@@ -17,6 +17,7 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 
 # --- Universe: every US-listed stock worth more than $1B market cap ---
 MIN_MARKET_CAP = 1_000_000_000
+MIN_UNIVERSE = 600        # a healthy live fetch returns ~2,000+; far fewer => treat as incomplete
 NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 
 # --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
@@ -42,6 +43,28 @@ FALLBACK_SYMBOLS = [
     "ETN","ITW","CSX","NSC","FDX","MMM","PH","GEV",
     "XOM","CVX","COP","SLB","EOG","MPC","PSX","VLO","OXY","WMB","KMI",
     "NEE","DUK","SO","LIN","APD","SHW","FCX","NEM","PLD","AMT","EQIX","CCI",
+    # --- broader large/mid-cap backup so a failed live fetch still scans wide ---
+    "PLTR","SNOW","DDOG","NET","ZS","OKTA","MDB","TEAM","HUBS","TTD","ZM","DOCU","TWLO","U",
+    "SHOP","WDAY","ADSK","ANSS","FICO","TYL","PTC","SSNC","FFIV","AKAM","GEN","NTAP","WDC",
+    "STX","HPQ","HPE","DELL","SMCI","ZBRA","TRMB","MRVL","SWKS","QRVO","MPWR","ENPH","FSLR",
+    "TER","ENTG","ARM","ASML","TSM","UBER","ABNB","DASH","EBAY","ETSY","PINS","SNAP","RBLX",
+    "SPOT","ROKU","BABA","JD","PDD","SE","MELI","CPNG","NU","COIN","HOOD","SOFI","AFRM","FIS",
+    "FI","GPN","ALLY","RIVN","LCID","STLA","TM","APTV","LEA","BWA","GRMN","DAL","UAL","AAL",
+    "LUV","RCL","CCL","NCLH","EXPE","H","DKNG","MGM","LVS","WYNN","CZR","PENN","CHDN","ULTA",
+    "DKS","BBY","BURL","FIVE","RH","W","CVNA","KMX","TPR","RL","LULU","DECK","WSM","FND","TSCO",
+    "YUM","DPZ","DRI","PWR","URI","PCAR","CMI","DOV","IR","AME","FTV","XYL","GNRC","HUBB","AOS",
+    "NDSN","IEX","GGG","WAB","J","ACM","PNR","TT","CARR","OTIS","DXCM","IDXX","ALGN","MTD","WST",
+    "RMD","HOLX","PODD","MRNA","BIIB","INCY","WAT","STE","COO","ZBH","BAX","DGX","LH","IQV","A",
+    "GEHC","CNC","MOH","HUM","DVN","FANG","HES","CTRA","OVV","EQT","TRGP","OKE","BKR","HAL","NOV",
+    "NUE","STLD","CLF","AA","MOS","CF","ALB","NTR","LYB","DOW","DD","PPG","ECL","VMC","MLM","IP",
+    "PKG","AVY","BALL","EMN","EL","CLX","CHD","K","HSY","SJM","CAG","HRL","CPB","STZ","TAP","TSN",
+    "ADM","BG","KR","SYY","O","SPG","PSA","AVB","EQR","VICI","WELL","DLR","EXR","MAA","ARE","INVH",
+    "KIM","REG","BXP","HST","UDR","D","AEP","EXC","XEL","ED","WEC","ES","PEG","PCG","SRE","AEE",
+    "CMS","DTE","FE","ETR","PPL","CNP","ATO","NI","WBD","PARA","FOXA","OMC","IPG","LYV","NWSA",
+    "TTWO","EA","MTCH","Z","MET","PRU","AIG","ALL","TRV","AFL","HIG","PFG","AMP","RJF","TROW",
+    "BEN","IVZ","NDAQ","CBOE","MKTX","FDS","MSCI","BRK-B","KKR","BX","APO","ARES","CG","OWL",
+    "SONY","SAP","TD","RY","BNS","UL","BTI","RIO","BHP","BP","SHEL","TTE","NVO","AZN","GSK",
+    "SNY","HSBC","ABEV","TTEK","DKNG",
 ]
 
 # --- Strategy dials (tune any of these, one number at a time) ---
@@ -84,9 +107,9 @@ def _parse_cap(value):
 
 
 def get_universe():
-    """All US-listed stocks with market cap >= MIN_MARKET_CAP, from the NASDAQ
-    screener. Returns (symbols, used_fallback). Falls back to FALLBACK_SYMBOLS
-    on any failure so the scan still runs."""
+    """Every US-listed stock with market cap >= MIN_MARKET_CAP, from the NASDAQ screener
+    (covers NASDAQ + NYSE + AMEX). Returns (symbols, used_fallback). Retries on failure, and
+    if the live list comes back suspiciously small it merges in the fallback so we never go dark."""
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -95,15 +118,23 @@ def get_universe():
         "Accept-Language": "en-US,en;q=0.9",
     }
     params = {"tableonly": "true", "limit": "0", "download": "true"}
-    try:
-        resp = requests.get(NASDAQ_SCREENER_URL, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        rows = resp.json()["data"]["rows"]
-    except Exception as e:
-        print(f"Universe fetch failed ({e}); using fallback list of {len(FALLBACK_SYMBOLS)}.")
-        return list(FALLBACK_SYMBOLS), True
+    rows = None
+    for attempt in range(4):
+        try:
+            resp = requests.get(NASDAQ_SCREENER_URL, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            rows = resp.json().get("data", {}).get("rows") or []
+            if rows:
+                break
+        except Exception as e:
+            print(f"Universe fetch attempt {attempt + 1}/4 failed: {e}")
+        time.sleep(2 ** attempt)
 
-    syms = []
+    if not rows:
+        print(f"Universe fetch failed after retries; using fallback list of {len(FALLBACK_SYMBOLS)}.")
+        return sorted(set(FALLBACK_SYMBOLS)), True
+
+    syms = set()
     for row in rows:
         cap = _parse_cap(row.get("marketCap"))
         if cap is None or cap < MIN_MARKET_CAP:
@@ -112,13 +143,13 @@ def get_universe():
         if not sym or any(c in sym for c in "^$"):   # skip warrants/units/odd tickers
             continue
         sym = sym.replace("/", "-").replace(".", "-")  # Yahoo uses '-' for share classes
-        syms.append(sym)
+        syms.add(sym)
 
-    syms = sorted(set(syms))
-    if not syms:
-        print("Screener returned no symbols above cap; using fallback list.")
-        return list(FALLBACK_SYMBOLS), True
-    return syms, False
+    if len(syms) < MIN_UNIVERSE:                      # incomplete fetch -> augment, don't go dark
+        print(f"Screener returned only {len(syms)} names (< {MIN_UNIVERSE}); merging fallback to be safe.")
+        syms |= set(FALLBACK_SYMBOLS)
+    print(f"Universe: {len(syms)} stocks with market cap >= ${MIN_MARKET_CAP:,}.")
+    return sorted(syms), False
 
 
 def find_pivots(highs, lows, left_k, right_k):
