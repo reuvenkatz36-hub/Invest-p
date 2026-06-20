@@ -62,6 +62,61 @@ def _rev_growth_from_statements(t):
     return None
 
 
+def _latest(df, *names):
+    """Most-recent value of any of the named rows in a yfinance statement DataFrame."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    for n in names:
+        if n in df.index:
+            s = df.loc[n].dropna()
+            if len(s):
+                return float(s.iloc[0])
+    return None
+
+
+def _fill_from_statements(t, info):
+    """Fill in key metrics from the financial statements when Yahoo's quick `info` blob is
+    sparse (it often is on the free endpoint). Keeps the score stable instead of swinging on
+    missing data. All best-effort."""
+    try:
+        fin = t.income_stmt
+    except Exception:
+        fin = None
+    try:
+        bs = t.balance_sheet
+    except Exception:
+        bs = None
+    try:
+        cf = t.cashflow
+    except Exception:
+        cf = None
+    rev = _latest(fin, "Total Revenue")
+    ni = _latest(fin, "Net Income", "Net Income Common Stockholders")
+    gp = _latest(fin, "Gross Profit")
+    if info.get("netIncomeToCommon") is None and ni is not None:
+        info["netIncomeToCommon"] = ni
+    if info.get("profitMargins") is None and ni is not None and rev:
+        info["profitMargins"] = ni / rev
+    if info.get("grossMargins") is None and gp is not None and rev:
+        info["grossMargins"] = gp / rev
+    ocf = _latest(cf, "Operating Cash Flow", "Total Cash From Operating Activities")
+    capex = _latest(cf, "Capital Expenditure", "Capital Expenditures")
+    fcf = _latest(cf, "Free Cash Flow")
+    if info.get("operatingCashflow") is None and ocf is not None:
+        info["operatingCashflow"] = ocf
+    if info.get("freeCashflow") is None:
+        if fcf is not None:
+            info["freeCashflow"] = fcf
+        elif ocf is not None and capex is not None:
+            info["freeCashflow"] = ocf + capex      # capex is negative in the statement
+    cash = _latest(bs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments")
+    debt = _latest(bs, "Total Debt")
+    if info.get("totalCash") is None and cash is not None:
+        info["totalCash"] = cash
+    if info.get("totalDebt") is None and debt is not None:
+        info["totalDebt"] = debt
+
+
 def _fetch(sym):
     t = yf.Ticker(sym)
     try:
@@ -72,6 +127,10 @@ def _fetch(sym):
         rg = _rev_growth_from_statements(t)
         if rg is not None:
             info["revenueGrowth"] = rg
+    try:
+        _fill_from_statements(t, info)              # backfill sparse `info` from the statements
+    except Exception:
+        pass
     out = {"info": info, "buyback": None, "insider_net": None}
     try:                                            # buybacks: cash spent repurchasing stock
         cf = t.cashflow
@@ -119,13 +178,33 @@ def evaluate(data):
     add("רווחיות", "רווח נקי (שורה תחתונה)", _pct(pm), f3((pm or 0) > 0, pm is not None), W_NETPROFIT,
         "באמת נשאר כסף בכיס אחרי כל ההוצאות" if (pm or 0) > 0 else "מפסידה כסף בשורה התחתונה")
 
-    # ---- Layer 2: תמחור ----
+    # ---- Layer 2: תמחור ---- (only penalize EXTREME valuation; "fully valued" stays neutral)
     pe = g("trailingPE") or g("forwardPE")
-    add("תמחור", "מכפיל רווח (P/E)", _num(pe), f3(pe is not None and 0 < pe < 25, pe is not None), W_PE,
-        "מחיר סביר ביחס לרווחים" if (pe and 0 < pe < 25) else "יקרה — צריך שנים רבות להחזיר את ההשקעה מהרווח")
+    if pe is None:
+        pe_flag = "na"
+    elif pe <= 0:
+        pe_flag = "red"
+    elif pe < 30:
+        pe_flag = "green"
+    elif pe > 50:
+        pe_flag = "red"
+    else:
+        pe_flag = "na"
+    add("תמחור", "מכפיל רווח (P/E)", _num(pe), pe_flag, W_PE,
+        "מחיר סביר ביחס לרווחים" if pe_flag == "green" else
+        ("יקר מאוד — מכפיל גבוה במיוחד" if pe_flag == "red" else "מתומחר במלואו אך לא קיצוני"))
     peg = g("trailingPegRatio") or g("pegRatio")
-    add("תמחור", "מחיר ביחס לצמיחה (PEG)", _num(peg), f3(peg is not None and 0 < peg <= 1.5, peg is not None), W_PEG,
-        "המחיר מוצדק לעומת קצב הצמיחה" if (peg and 0 < peg <= 1.5) else "יקרה ביחס לכמה שהיא צומחת")
+    if peg is None:
+        peg_flag = "na"
+    elif 0 < peg <= 2:
+        peg_flag = "green"
+    elif peg > 3.5:
+        peg_flag = "red"
+    else:
+        peg_flag = "na"
+    add("תמחור", "מחיר ביחס לצמיחה (PEG)", _num(peg), peg_flag, W_PEG,
+        "המחיר מוצדק לעומת קצב הצמיחה" if peg_flag == "green" else
+        ("יקר מאוד ביחס לצמיחה" if peg_flag == "red" else "תמחור סביר-עד-מלא ביחס לצמיחה"))
     ps = g("priceToSalesTrailing12Months")
     if ps is None:
         ps_flag = "na"
@@ -152,13 +231,18 @@ def evaluate(data):
     add("תזרים מזומנים", "תזרים מזומנים חופשי (FCF)", _money(fcf), f3((fcf or 0) > 0, fcf is not None), W_FCF,
         "נשאר מזומן טהור אחרי הכל" if (fcf or 0) > 0 else "שורפת מזומן — תלויה בגיוסים")
 
-    # ---- Layer 4: חוסן ואיתנות ----
-    cash, debt, de = g("totalCash"), g("totalDebt"), g("debtToEquity")
-    debt_known = (cash is not None and debt is not None) or de is not None
-    debt_ok = (cash is not None and debt is not None and cash >= debt) or (de is not None and de < 80)
-    add("חוסן ואיתנות", "חוב מול מזומן", f"מזומן {_money(cash)} מול חוב {_money(debt)}",
+    # ---- Layer 4: חוסן ואיתנות ---- (cash-flow-aware: strong FCF can cover debt comfortably)
+    cash, debt, de, cr = g("totalCash"), g("totalDebt"), g("debtToEquity"), g("currentRatio")
+    debt_known = any(v is not None for v in (cash, debt, de, cr))
+    debt_ok = (
+        (cash is not None and debt is not None and cash >= debt) or              # net cash
+        (fcf is not None and fcf > 0 and debt is not None and debt <= 5 * fcf) or # ~5y of FCF clears it
+        (de is not None and de < 100) or                                          # modest leverage
+        (cr is not None and cr >= 1.5 and (de is None or de < 200))               # liquid, not extreme
+    )
+    add("חוסן ואיתנות", "חוב מול מזומן/תזרים", f"מזומן {_money(cash)} מול חוב {_money(debt)}",
         f3(debt_ok, debt_known), W_DEBT,
-        "מספיק כסף פנוי כדי לשרוד משבר" if debt_ok else "החוב גדול — חשופה ללחץ אם משהו משתבש")
+        "מספיק מזומן/תזרים כדי לכסות את החוב בנוחות" if debt_ok else "החוב כבד יחסית למזומן ולתזרים")
     roe = g("returnOnEquity")
     add("חוסן ואיתנות", "יעילות הנהלה (ROE)", _pct(roe), f3((roe or 0) >= 0.15, roe is not None), W_ROE,
         "ההנהלה מייצרת תשואה גבוהה על הכסף" if (roe or 0) >= 0.15 else "תשואה נמוכה על ההון המושקע")
@@ -207,6 +291,8 @@ def evaluate(data):
     net_red = flagof("רווח נקי") == "red"
     fcf_red = flagof("FCF") == "red"
     ps_red = flagof("P/S") == "red"
+    # "richly valued" = good business but not cheap; a mild caveat, not a health problem
+    rich = (pe is not None and pe > 30) or (peg is not None and peg > 2.5) or ps_red
 
     # Hard caps so an obviously risky stock can never read as "excellent":
     caps = []
@@ -214,6 +300,8 @@ def evaluate(data):
         score = min(score, 4); caps.append("מפסידה כסף ושורפת מזומן")
     if ps_red:                              # priced at a huge multiple of actual sales
         score = min(score, 6); caps.append("תמחור ספקולטיבי (מכפיל מכירות עצום)")
+    elif rich:                              # great company but fully priced -> can't be a perfect 10
+        score = min(score, 9)
     # Sparse data must not inflate the score — a 10/10 off 1-2 known flags is meaningless.
     if coverage < 0.30:
         score = min(score, 4); confidence = "very_low"
@@ -223,7 +311,7 @@ def evaluate(data):
         confidence = "ok"
 
     verdict = ("מצוין" if score >= 8 else "טוב" if score >= 6 else "בינוני" if score >= 4 else "חלש")
-    opportunity, danger = _bottom_line(items)
+    opportunity, danger = _bottom_line(items, rich)
     return {"items": items, "score": score, "verdict": verdict,
             "opportunity": opportunity, "danger": danger, "caps": caps,
             "confidence": confidence, "coverage": round(coverage, 2),
@@ -237,7 +325,7 @@ def _find(items, label_part):
     return None
 
 
-def _bottom_line(items):
+def _bottom_line(items, rich=False):
     by = {it["label"]: it["flag"] for it in items}
     green = lambda part: any(part in lbl and fl == "green" for lbl, fl in by.items())
     red = lambda part: any(part in lbl and fl == "red" for lbl, fl in by.items())
@@ -269,6 +357,8 @@ def _bottom_line(items):
         dgr = "שורפת מזומן חופשי — תלויה ביכולת לגייס עוד כסף."
     elif red("P/E") or red("PEG"):
         dgr = "תמחור גבוה — מתומחרות בה ציפיות שצריך לעמוד בהן, אחרת תיפול."
+    elif rich:
+        dgr = "החברה איכותית אבל מתומחרת ביוקר — הציפיות כבר בפנים, ויש מעט מקום לטעות אם רבעון יאכזב."
     else:
         dgr = "לא נמצאה סכנה שקטה בולטת בדוחות — הסיכון העיקרי הוא תנודתיות השוק."
     return opp, dgr
