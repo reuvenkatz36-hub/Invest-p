@@ -386,12 +386,23 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
             lines.append(f"  More: {news_link(h['sym'])}")
     lines.append("")
     lines.append("Set stop + take-profit in Plus500. Not financial advice — check the news before buying.")
+    return "\n".join(lines)
 
-    # Telegram hard-caps messages at 4096 chars; trim from the bottom if needed.
-    text = "\n".join(lines)
-    if len(text) > 3900:
-        text = text[:3900].rsplit("\n", 1)[0] + "\n…(truncated — see full list in the run log)"
-    return text
+
+def send_long(text, limit=3900):
+    """Telegram caps messages at 4096 chars, so send a long report as several messages,
+    splitting only on blank lines so individual setups never get cut in half."""
+    blocks = text.split("\n\n")
+    chunk, sent = "", 0
+    for b in blocks:
+        if chunk and len(chunk) + 2 + len(b) > limit:
+            sent += 1 if send_telegram_message(chunk) else 0
+            chunk = b
+        else:
+            chunk = (chunk + "\n\n" + b) if chunk else b
+    if chunk:
+        sent += 1 if send_telegram_message(chunk) else 0
+    return sent
 
 
 def main():
@@ -444,8 +455,9 @@ def main():
             print(f"  {sym}: {pct:.1f}% off low")
 
     summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback)
-    if send_telegram_message(summary):
-        print("\nSummary message sent.")
+    sent = send_long(summary)
+    if sent:
+        print(f"\nSummary sent in {sent} message(s).")
     else:
         print("\nSummary message FAILED to send (check TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).")
 
