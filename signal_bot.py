@@ -342,7 +342,8 @@ def enrich_hits(hits):
         news = fetch_news(sym)
         try:
             import xray
-            xr = xray.xray(sym, ai=True)     # Sonnet sharpens the verdict when the key is set
+            # Sonnet sharpens the verdict; web search per setup is opt-in (XRAY_WEB=1) to control cost
+            xr = xray.xray(sym, ai=True, web=os.environ.get("XRAY_WEB") == "1")
         except Exception:
             xr = None
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
