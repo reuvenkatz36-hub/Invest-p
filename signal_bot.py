@@ -342,7 +342,7 @@ def enrich_hits(hits):
         news = fetch_news(sym)
         try:
             import xray
-            xr = xray.xray(sym)
+            xr = xray.xray(sym, ai=True)     # Sonnet sharpens the verdict when the key is set
         except Exception:
             xr = None
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
@@ -379,6 +379,8 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
             lines.append(f"  🩻 ציון בריאות: {xr['score']}/10 ({xr['verdict']})")
             lines.append(f"  💡 הזדמנות: {xr['opportunity']}")
             lines.append(f"  ⚠️ סכנה: {xr['danger']}")
+            if xr.get("ai_verdict"):
+                lines.append(f"  🤖 {xr['ai_verdict']}")
             lines.append(f"  לרנטגן המלא בצ'אט: /xray {h['sym']}")
         for title in h["news"]:
             lines.append(f"  • {title}")

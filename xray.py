@@ -8,6 +8,8 @@ Public API:
     xray_short(sym)      -> one-block summary: score + opportunity + danger (str) or None
 """
 
+import os
+
 import yfinance as yf
 
 # Each check: (layer, label, weight, plain-Hebrew note). Weight = how much it matters to the
@@ -376,10 +378,64 @@ _LAYER_TITLE = {
 }
 
 
-def xray(sym):
+def _ai_layer(sym, res):
+    """If an ANTHROPIC_API_KEY is set, let Sonnet read the real rule-based metrics and write a
+    sharper opportunity / danger / bottom-line in Hebrew — catching nuance the rules can't.
+    It only rewrites the narrative; the numeric score stays anchored to the hard data."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return
+    try:
+        import anthropic
+    except ImportError:
+        return
+    facts = "; ".join(f"{it['label']}={it['value']} [{it['flag']}]" for it in res["items"])
+    sector = res.get("sector") or "לא ידוע"
+    user = (f"מניה: {sym} | סקטור: {sector} | ציון פונדמנטלי לפי כללים: {res['score']}/10.\n"
+            f"נתונים גולמיים מהדוחות: {facts}\n\n"
+            "אתה אנליסט פיננסי בכיר. בהתבסס רק על הנתונים שלמעלה (אל תמציא מספרים), ענה בעברית "
+            "פשוטה בפורמט המדויק הזה, בלי שום תוספת:\n"
+            "הזדמנות: <משפט אחד — מה הדבר שיכול להקפיץ את המניה>\n"
+            "סכנה: <משפט אחד — הסכנה השקטה שמסתתרת ושרבים מפספסים>\n"
+            "שורה תחתונה: <2-3 משפטים של שיפוט חד וכן, כולל ניואנס שהמספרים היבשים מפספסים>")
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        resp = client.messages.create(
+            model=os.environ.get("CHAT_MODEL", "claude-sonnet-4-6"),
+            max_tokens=700,
+            system="אתה אנליסט פיננסי בכיר שמסביר דברים מסובכים בפשטות. כן, ענייני, בלי הבטחות. זה לא ייעוץ השקעות.",
+            messages=[{"role": "user", "content": user}],
+        )
+        txt = "".join(b.text for b in resp.content if b.type == "text").strip()
+    except Exception as e:
+        print(f"xray AI failed: {e}")
+        return
+    verdict = []
+    for line in txt.splitlines():
+        s = line.strip()
+        if s.startswith("הזדמנות:"):
+            res["opportunity"] = s.split(":", 1)[1].strip()
+        elif s.startswith("סכנה:"):
+            res["danger"] = s.split(":", 1)[1].strip()
+        elif s.startswith("שורה תחתונה:"):
+            verdict.append(s.split(":", 1)[1].strip())
+        elif verdict and s:
+            verdict.append(s)
+    vt = " ".join(v for v in verdict if v).strip()
+    if vt:
+        res["ai_verdict"] = vt
+    res["ai"] = True
+
+
+def xray(sym, ai=False):
     try:
         res = evaluate(_fetch(sym))
         res.update({"ok": res.get("known", False), "sym": sym})
+        if ai and res["ok"]:
+            try:
+                _ai_layer(sym, res)
+            except Exception as e:
+                print(f"xray AI layer error: {e}")
         return res
     except Exception:
         return {"ok": False, "sym": sym}
@@ -395,7 +451,7 @@ def _confidence_note(res):
 
 
 def xray_text(sym, res=None):
-    res = res or xray(sym)
+    res = res or xray(sym, ai=True)        # standalone full report -> use the AI brain
     if not res.get("ok"):
         return None
     sector = f"  ({res['sector']})" if res.get("sector") else ""
@@ -410,17 +466,22 @@ def xray_text(sym, res=None):
         for it in [i for i in res["items"] if i["layer"] == layer]:
             lines.append(f"{FLAG_EMOJI[it['flag']]} {it['label']}: {it['value']} — {it['note']}")
     lines += ["", f"💡 ההזדמנות: {res['opportunity']}", f"⚠️ הסכנה: {res['danger']}"]
+    if res.get("ai_verdict"):
+        lines += ["", f"🤖 שורה תחתונה (Sonnet): {res['ai_verdict']}"]
     return "\n".join(lines)
 
 
 def xray_short(sym, res=None):
-    res = res or xray(sym)
+    res = res or xray(sym)                 # inline in /analyze -> rules only (ai_opinion adds the AI take)
     if not res.get("ok"):
         return None
     note = _confidence_note(res)
     head = f"🩻 ציון בריאות פונדמנטלי: {res['score']}/10 ({res['verdict']})"
     if note:
         head += "\n" + note
-    return (f"{head}\n"
-            f"💡 ההזדמנות: {res['opportunity']}\n"
-            f"⚠️ הסכנה: {res['danger']}")
+    out = (f"{head}\n"
+           f"💡 ההזדמנות: {res['opportunity']}\n"
+           f"⚠️ הסכנה: {res['danger']}")
+    if res.get("ai_verdict"):
+        out += f"\n🤖 שורה תחתונה (Sonnet): {res['ai_verdict']}"
+    return out
