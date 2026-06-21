@@ -26,6 +26,9 @@ W_PEG       = 1.5
 W_FORWARD   = 1.5
 W_MOAT      = 1.5
 W_PS        = 1.5
+W_ANALYST   = 1.0
+W_SHORT     = 1.0
+W_SURPRISE  = 1.0
 W_INSIDER   = 1.0
 W_RETURNS   = 1.0
 
@@ -153,6 +156,17 @@ def _fetch(sym):
                 out["insider_net"] = float(ip.loc[mask, col].iloc[0])
     except Exception:
         pass
+    out["earn_beats"] = None                         # recent earnings beats vs estimates
+    try:
+        ed = t.get_earnings_dates(limit=10)
+        if ed is not None and not ed.empty:
+            scol = next((c for c in ed.columns if "Surprise" in str(c)), None)
+            if scol:
+                past = ed[scol].dropna().head(4)
+                if len(past):
+                    out["earn_beats"] = (int((past > 0).sum()), int(len(past)))
+    except Exception:
+        pass
     return out
 
 
@@ -263,6 +277,39 @@ def evaluate(data):
         ("קונים" if (ins or 0) > 0 else "מוכרים") if ins_known else "אין נתון",
         f3((ins or 0) > 0, ins_known), W_INSIDER,
         "מנהלים קונים מהכסף שלהם — אמון אמיתי" if (ins or 0) > 0 else "אין קנייה פנימית בולטת")
+    # analyst consensus + price-target upside
+    rec = g("recommendationKey")
+    nop = g("numberOfAnalystOpinions")
+    upside = (tgt / price - 1) if (tgt and price) else None
+    analyst_known = (rec not in (None, "none")) or upside is not None
+    analyst_ok = (rec in ("buy", "strong_buy")) or (upside is not None and upside > 0.10)
+    analyst_bad = (rec in ("sell", "strong_sell")) or (upside is not None and upside < -0.05)
+    a_flag = "green" if analyst_ok else ("red" if analyst_bad else ("na" if not analyst_known else "na"))
+    a_val = f"{rec or '?'}" + (f", יעד {upside:+.0%}" if upside is not None else "") + (f" ({nop} אנליסטים)" if nop else "")
+    add("איתותים לעתיד", "קונצנזוס אנליסטים + יעד מחיר", a_val, a_flag, W_ANALYST,
+        "האנליסטים אופטימיים והיעד מעל המחיר" if analyst_ok else
+        ("האנליסטים שליליים / היעד מתחת למחיר" if analyst_bad else "עמדת האנליסטים נייטרלית"))
+    # short interest (bearish positioning / squeeze risk)
+    sf = g("shortPercentOfFloat")
+    if sf is None:
+        sf_flag = "na"
+    elif sf < 0.05:
+        sf_flag = "green"
+    elif sf > 0.15:
+        sf_flag = "red"
+    else:
+        sf_flag = "na"
+    add("איתותים לעתיד", "שורט (הימור נגד המניה)", _pct(sf) if sf is not None else "אין נתון", sf_flag, W_SHORT,
+        "כמעט אין מי שמהמר נגד המניה" if sf_flag == "green" else
+        ("שורט גבוה — השוק מהמר נגדה (אך יש פוטנציאל סקוויז)" if sf_flag == "red" else "רמת שורט בינונית"))
+    # earnings track record: did it beat estimates recently?
+    eb = data.get("earn_beats")
+    if eb:
+        beats, tot = eb
+        es_ok = beats >= max(1, round(tot * 0.75))
+        add("איתותים לעתיד", "עקביות מול תחזיות (Beats)", f"{beats}/{tot} רבעונים מעל הציפיות",
+            "green" if es_ok else "red", W_SURPRISE,
+            "מכה את תחזיות האנליסטים בעקביות" if es_ok else "מאכזבת מול הציפיות לא פעם")
 
     # ---- Layer 6: מגן ופינוק ----
     dy, bb = g("dividendYield"), data.get("buyback")
@@ -378,10 +425,11 @@ _LAYER_TITLE = {
 }
 
 
-def _ai_layer(sym, res):
+def _ai_layer(sym, res, web=False):
     """If an ANTHROPIC_API_KEY is set, let Sonnet read the real rule-based metrics and write a
     sharper opportunity / danger / bottom-line in Hebrew — catching nuance the rules can't.
-    It only rewrites the narrative; the numeric score stays anchored to the hard data."""
+    With web=True it may search the web for current context (news, dilution, short squeeze,
+    analyst views). It only rewrites the narrative; the numeric score stays anchored to data."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return
@@ -391,22 +439,36 @@ def _ai_layer(sym, res):
         return
     facts = "; ".join(f"{it['label']}={it['value']} [{it['flag']}]" for it in res["items"])
     sector = res.get("sector") or "לא ידוע"
+    web_line = ("יש לך גישה לחיפוש באינטרנט — חפש מידע עדכני (חדשות אחרונות, גיוסי הון/דילול, "
+                "שורט, עמדות אנליסטים) כדי לדייק את התשובה.\n" if web else "")
     user = (f"מניה: {sym} | סקטור: {sector} | ציון פונדמנטלי לפי כללים: {res['score']}/10.\n"
             f"נתונים גולמיים מהדוחות: {facts}\n\n"
-            "אתה אנליסט פיננסי בכיר. בהתבסס רק על הנתונים שלמעלה (אל תמציא מספרים), ענה בעברית "
+            f"{web_line}"
+            "אתה אנליסט פיננסי בכיר. אל תמציא מספרים שלא נתמכים בנתונים/בחיפוש. ענה בעברית "
             "פשוטה בפורמט המדויק הזה, בלי שום תוספת:\n"
             "הזדמנות: <משפט אחד — מה הדבר שיכול להקפיץ את המניה>\n"
             "סכנה: <משפט אחד — הסכנה השקטה שמסתתרת ושרבים מפספסים>\n"
             "שורה תחתונה: <2-3 משפטים של שיפוט חד וכן, כולל ניואנס שהמספרים היבשים מפספסים>")
+    kwargs = dict(
+        model=os.environ.get("CHAT_MODEL", "claude-sonnet-4-6"),
+        max_tokens=900,
+        system="אתה אנליסט פיננסי בכיר שמסביר דברים מסובכים בפשטות. כן, ענייני, בלי הבטחות. זה לא ייעוץ השקעות.",
+        messages=[{"role": "user", "content": user}],
+    )
+    if web:
+        kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}]
     try:
         client = anthropic.Anthropic(api_key=key)
-        resp = client.messages.create(
-            model=os.environ.get("CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=700,
-            system="אתה אנליסט פיננסי בכיר שמסביר דברים מסובכים בפשטות. כן, ענייני, בלי הבטחות. זה לא ייעוץ השקעות.",
-            messages=[{"role": "user", "content": user}],
-        )
-        txt = "".join(b.text for b in resp.content if b.type == "text").strip()
+        try:
+            resp = client.messages.create(**kwargs)
+        except Exception as e:
+            if "tools" in kwargs:          # web search unsupported on this account -> retry plain
+                print(f"xray web search unavailable ({e}); retrying without it.")
+                kwargs.pop("tools", None)
+                resp = client.messages.create(**kwargs)
+            else:
+                raise
+        txt = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
     except Exception as e:
         print(f"xray AI failed: {e}")
         return
@@ -427,13 +489,13 @@ def _ai_layer(sym, res):
     res["ai"] = True
 
 
-def xray(sym, ai=False):
+def xray(sym, ai=False, web=False):
     try:
         res = evaluate(_fetch(sym))
         res.update({"ok": res.get("known", False), "sym": sym})
         if ai and res["ok"]:
             try:
-                _ai_layer(sym, res)
+                _ai_layer(sym, res, web=web)
             except Exception as e:
                 print(f"xray AI layer error: {e}")
         return res
@@ -451,7 +513,7 @@ def _confidence_note(res):
 
 
 def xray_text(sym, res=None):
-    res = res or xray(sym, ai=True)        # standalone full report -> use the AI brain
+    res = res or xray(sym, ai=True, web=True)   # on-demand deep dive -> AI brain + live web search
     if not res.get("ok"):
         return None
     sector = f"  ({res['sector']})" if res.get("sector") else ""
