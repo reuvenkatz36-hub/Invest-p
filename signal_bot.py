@@ -8,6 +8,8 @@ import requests
 import pandas as pd
 import yfinance as yf
 
+import xray   # fundamental X-ray + health score (attached to each daily BUY setup)
+
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -145,11 +147,12 @@ def get_universe():
         sym = sym.replace("/", "-").replace(".", "-")  # Yahoo uses '-' for share classes
         syms.add(sym)
 
-    if len(syms) < MIN_UNIVERSE:                      # incomplete fetch -> augment, don't go dark
+    merged = len(syms) < MIN_UNIVERSE                 # incomplete fetch -> augment, don't go dark
+    if merged:
         print(f"Screener returned only {len(syms)} names (< {MIN_UNIVERSE}); merging fallback to be safe.")
         syms |= set(FALLBACK_SYMBOLS)
     print(f"Universe: {len(syms)} stocks with market cap >= ${MIN_MARKET_CAP:,}.")
-    return sorted(syms), False
+    return sorted(syms), merged                       # disclose if the fallback was mixed in
 
 
 def find_pivots(highs, lows, left_k, right_k):
@@ -200,7 +203,8 @@ def evaluate(highs, lows, closes, vols):
     pct = (price - low_last[1]) / low_last[1] * 100
     in_zone = ENTRY_MIN_PCT <= pct <= ENTRY_MAX_PCT
     turning_up = closes[-1] > closes[-2]
-    prev_avg_vol = sum(vols[-21:-1]) / 20.0                          # prior 20 days, excludes today
+    prior = vols[-21:-1]                                             # prior up-to-20 days, excludes today
+    prev_avg_vol = sum(prior) / len(prior) if prior else 0          # divide by what we actually have
     volume_ok = prev_avg_vol > 0 and vols[-1] > VOL_MULT * prev_avg_vol  # volume confirmation
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
@@ -341,10 +345,10 @@ def enrich_hits(hits):
             continue
         news = fetch_news(sym)
         try:
-            import xray
             # Sonnet sharpens the verdict; web search per setup is opt-in (XRAY_WEB=1) to control cost
             xr = xray.xray(sym, ai=True, web=os.environ.get("XRAY_WEB") == "1")
-        except Exception:
+        except Exception as e:
+            print(f"  xray failed for {sym}: {e}")
             xr = None
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
         time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
@@ -394,15 +398,31 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
 
 def send_long(text, limit=3900):
     """Telegram caps messages at 4096 chars, so send a long report as several messages,
-    splitting only on blank lines so individual setups never get cut in half."""
-    blocks = text.split("\n\n")
+    splitting on blank lines so setups stay intact. Any single oversized block is hard-split
+    (by lines, then raw chars) so nothing is ever dropped or rejected."""
+    def pieces(block):
+        if len(block) <= limit:
+            return [block]
+        out, cur = [], ""
+        for ln in block.split("\n"):
+            while len(ln) > limit:                 # a single monster line
+                out.append(ln[:limit]); ln = ln[limit:]
+            if cur and len(cur) + 1 + len(ln) > limit:
+                out.append(cur); cur = ln
+            else:
+                cur = (cur + "\n" + ln) if cur else ln
+        if cur:
+            out.append(cur)
+        return out
+
     chunk, sent = "", 0
-    for b in blocks:
-        if chunk and len(chunk) + 2 + len(b) > limit:
-            sent += 1 if send_telegram_message(chunk) else 0
-            chunk = b
-        else:
-            chunk = (chunk + "\n\n" + b) if chunk else b
+    for b in text.split("\n\n"):
+        for piece in pieces(b):
+            if chunk and len(chunk) + 2 + len(piece) > limit:
+                sent += 1 if send_telegram_message(chunk) else 0
+                chunk = piece
+            else:
+                chunk = (chunk + "\n\n" + piece) if chunk else piece
     if chunk:
         sent += 1 if send_telegram_message(chunk) else 0
     return sent
