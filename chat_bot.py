@@ -54,7 +54,7 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
              "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL",
-             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN"}
+             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN", "DASHBOARD", "WEBSITE", "SITE", "GRAPH"}
 
 # The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
 # you when a new candidate repeats the same mistake. Each entry is
@@ -469,6 +469,7 @@ COMMANDS = [
     ("remove",     "Delete a position logged by mistake",        "/remove AAPL"),
     ("history",    "Closed trades & win/loss record",            ""),
     ("stats",      "Portfolio summary: invested, P&L, win rate", ""),
+    ("dashboard",  "Open your web dashboard (P&L, graph, news)", ""),
     ("learn",      "What your losing trades have in common",     ""),
     ("watch",      "Add a stock to your watchlist",              "/watch AAPL"),
     ("unwatch",    "Remove a stock from your watchlist",         "/unwatch AAPL"),
@@ -686,6 +687,19 @@ def handle_daily():
     return f"Couldn't start the daily scan: {err}"
 
 
+def handle_dashboard():
+    url = os.environ.get("DASHBOARD_URL")
+    if not url:
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if "/" in repo:
+            owner, name = repo.split("/", 1)
+            url = f"https://{owner.lower()}.github.io/{name}/"
+    if not url:
+        return "Your dashboard URL isn't configured yet."
+    return (f"\U0001F4C8 Your dashboard: {url}\n"
+            "Enter your password to unlock it (P&L, graph, holdings, watchlist & news summary).")
+
+
 def handle_command(cmd, arg, trades):
     """Dispatch an explicit /slash command. `arg` is the text after the command."""
     sym = extract_ticker(arg) if arg else None
@@ -713,6 +727,8 @@ def handle_command(cmd, arg, trades):
         return handle_history(trades)
     if cmd in ("stats", "summary", "stat"):
         return handle_stats(trades)
+    if cmd in ("dashboard", "site", "web", "graph"):
+        return handle_dashboard()
     if cmd == "learn":
         return handle_learn(trades)
     if cmd == "watch":
@@ -794,6 +810,8 @@ def handle_message(text, trades):
         return handle_scan(trades)
     if has("stats", "summary"):
         return handle_stats(trades)
+    if has("dashboard", "website", "graph"):
+        return handle_dashboard()
     sym = extract_ticker(text)
     if not sym:
         return "I didn't catch a stock symbol. " + HELP
