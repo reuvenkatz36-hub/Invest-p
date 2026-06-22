@@ -128,10 +128,12 @@ def _fetch(sym):
         info = t.info or {}
     except Exception:
         info = {}
-    if not info.get("revenueGrowth"):               # keep revenue consistent with the daily scan
-        rg = _rev_growth_from_statements(t)
+    if info.get("revenueGrowth") is None:           # keep revenue consistent with the daily scan
+        rg = _rev_growth_from_statements(t)          # (don't discard a legit flat 0% reading)
         if rg is not None:
             info["revenueGrowth"] = rg
+    if info.get("currentPrice") is None:            # some tickers only expose regularMarketPrice
+        info["currentPrice"] = info.get("regularMarketPrice")
     try:
         _fill_from_statements(t, info)              # backfill sparse `info` from the statements
     except Exception:
@@ -158,11 +160,12 @@ def _fetch(sym):
         pass
     out["earn_beats"] = None                         # recent earnings beats vs estimates
     try:
+        import pandas as pd
         ed = t.get_earnings_dates(limit=10)
         if ed is not None and not ed.empty:
             scol = next((c for c in ed.columns if "Surprise" in str(c)), None)
             if scol:
-                past = ed[scol].dropna().head(4)
+                past = pd.to_numeric(ed[scol], errors="coerce").dropna().head(4)  # robust to strings/NaN
                 if len(past):
                     out["earn_beats"] = (int((past > 0).sum()), int(len(past)))
     except Exception:
@@ -472,16 +475,18 @@ def _ai_layer(sym, res, web=False):
     except Exception as e:
         print(f"xray AI failed: {e}")
         return
-    verdict = []
+    verdict, in_verdict = [], False
     for line in txt.splitlines():
         s = line.strip()
         if s.startswith("הזדמנות:"):
-            res["opportunity"] = s.split(":", 1)[1].strip()
+            res["opportunity"] = s.split(":", 1)[1].strip(); in_verdict = False
         elif s.startswith("סכנה:"):
-            res["danger"] = s.split(":", 1)[1].strip()
+            res["danger"] = s.split(":", 1)[1].strip(); in_verdict = False
         elif s.startswith("שורה תחתונה:"):
-            verdict.append(s.split(":", 1)[1].strip())
-        elif verdict and s:
+            verdict = [s.split(":", 1)[1].strip()]; in_verdict = True
+        elif in_verdict:
+            if not s:                       # stop at the first blank line after the bottom line
+                break
             verdict.append(s)
     vt = " ".join(v for v in verdict if v).strip()
     if vt:
