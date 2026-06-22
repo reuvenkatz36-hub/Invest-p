@@ -199,8 +199,12 @@ def rule_report(sym, r, rev_status, rev_label, news):
              f"{chk(r['near_support'])} Pulled back near support",
              f"{chk(r['in_zone'])} In the {sb.ENTRY_MIN_PCT:.0f}-{sb.ENTRY_MAX_PCT:.0f}% buy zone off the low",
              f"{chk(r['volume_ok'])} Bounce volume above average",
+             f"{chk(not r.get('crash_risk'))} No violent crash in the past year",
              f"{rev_icon} {rev_label}"]
-    if r["fires"] and rev_status == "yes":
+    if r.get("crash_risk"):
+        verdict = (f"\U0001F534 AVOID — had a {r.get('max_drop')}% single-day crash in the past year. "
+                   "Too unpredictable for this strategy, so the bot won't suggest it.")
+    elif r["fires"] and rev_status == "yes":
         verdict = "\U0001F7E2 STRONG — matches the full buy setup."
     elif r["pulled_back"]:
         verdict = "\U0001F7E1 WATCH — pulled back in an uptrend, waiting on the bounce + volume (and revenue)."
@@ -642,7 +646,9 @@ def handle_scan(trades):
         if r is None:
             lines.append(f"• {sym}: no data")
             continue
-        if r["fires"] and rev_status == "yes":
+        if r.get("crash_risk"):
+            tag = f"\U0001F534 AVOID — {r.get('max_drop')}% crash in the past year"
+        elif r["fires"] and rev_status == "yes":
             tag = "\U0001F7E2 STRONG buy setup"
         elif r["fires"]:
             tag = "\U0001F7E2 buy setup (revenue unconfirmed)"
