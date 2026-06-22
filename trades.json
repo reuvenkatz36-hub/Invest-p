@@ -25,8 +25,8 @@
     {
       "sym": "KWR",
       "entry": 151.22,
-      "amount": null,
-      "shares": null,
+      "amount": 4990.26,
+      "shares": 33,
       "date": "2026-06-19",
       "setup": {
         "rev_status": "unknown"
@@ -100,5 +100,8 @@
     "CLBT",
     "CRVL",
     "FLEX"
-  ]
+  ],
+  "account": {
+    "starting_capital": 100000
+  }
 }

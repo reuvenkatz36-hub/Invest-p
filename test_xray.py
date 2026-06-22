@@ -37,7 +37,7 @@ class TestScore(unittest.TestCase):
     def test_strong_cheap_is_ten(self):
         r = score()
         self.assertEqual(r["score"], 10)
-        self.assertEqual(r["verdict"], "מצוין")
+        self.assertEqual(r["verdict"], "Excellent")
         self.assertEqual(r["confidence"], "ok")
 
     def test_great_but_expensive_is_nine_not_ten(self):
@@ -46,14 +46,14 @@ class TestScore(unittest.TestCase):
                    "totalCash": 6.2e10, "totalDebt": 1.0e11, "debtToEquity": 150, "returnOnEquity": 1.5,
                    "operatingCashflow": 1.2e11, "netIncomeToCommon": 1.0e11, "freeCashflow": 1.0e11})
         self.assertEqual(r["score"], 9)
-        self.assertIn("מתומחרת ביוקר", r["danger"])
+        self.assertIn("richly valued", r["danger"])
 
     def test_cash_burner_is_capped_low(self):
         r = score({"profitMargins": -0.5, "netIncomeToCommon": -2e8, "freeCashflow": -1.5e8,
                    "operatingCashflow": -1.4e8})
         self.assertLessEqual(r["score"], 4)
-        self.assertNotEqual(r["verdict"], "מצוין")
-        self.assertTrue(any("שורפת" in c for c in r["caps"]))
+        self.assertNotEqual(r["verdict"], "Excellent")
+        self.assertTrue(any("burning" in c for c in r["caps"]))
 
     def test_speculative_price_to_sales_capped(self):
         r = score({"priceToSalesTrailing12Months": 330})
@@ -84,25 +84,25 @@ class TestFlags(unittest.TestCase):
         return next(it["flag"] for it in r["items"] if label_part in it["label"])
 
     def test_short_interest_flag(self):
-        self.assertEqual(self._flag(score({"shortPercentOfFloat": 0.24}), "שורט"), "red")
-        self.assertEqual(self._flag(score({"shortPercentOfFloat": 0.02}), "שורט"), "green")
+        self.assertEqual(self._flag(score({"shortPercentOfFloat": 0.24}), "Short"), "red")
+        self.assertEqual(self._flag(score({"shortPercentOfFloat": 0.02}), "Short"), "green")
 
     def test_analyst_flag(self):
-        self.assertEqual(self._flag(score({"recommendationKey": "strong_buy"}), "קונצנזוס"), "green")
+        self.assertEqual(self._flag(score({"recommendationKey": "strong_buy"}), "Analyst"), "green")
         self.assertEqual(self._flag(score({"recommendationKey": "sell", "targetMeanPrice": 80,
-                                           "currentPrice": 100}), "קונצנזוס"), "red")
+                                           "currentPrice": 100}), "Analyst"), "red")
 
     def test_earnings_beats_flag(self):
-        self.assertEqual(self._flag(score(earn_beats=(4, 4)), "Beats"), "green")
-        self.assertEqual(self._flag(score(earn_beats=(0, 4)), "Beats"), "red")
+        self.assertEqual(self._flag(score(earn_beats=(4, 4)), "Earnings beats"), "green")
+        self.assertEqual(self._flag(score(earn_beats=(0, 4)), "Earnings beats"), "red")
 
     def test_unprofitable_flag_red(self):
-        self.assertEqual(self._flag(score({"profitMargins": -0.3}), "רווח נקי"), "red")
+        self.assertEqual(self._flag(score({"profitMargins": -0.3}), "Net profit"), "red")
 
     def test_cashflow_aware_debt_not_falsely_red(self):
         # more debt than cash, but huge FCF easily covers it -> must be green (the AAPL case)
         r = score({"totalCash": 6e10, "totalDebt": 1e11, "debtToEquity": 150, "freeCashflow": 1e11})
-        self.assertEqual(self._flag(r, "חוב"), "green")
+        self.assertEqual(self._flag(r, "Debt"), "green")
 
 
 class TestNormalization(unittest.TestCase):

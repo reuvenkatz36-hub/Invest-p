@@ -71,7 +71,8 @@
   <div class="wrap">
     <header>
       <div><h1>📈 Dashboard</h1><span class="mut small" id="updated"></span></div>
-      <div style="text-align:right"><div class="mut small">Total P&L</div><div class="total" id="total">—</div></div>
+      <div style="text-align:right"><div class="mut small">Account value</div>
+        <div class="total" id="equity">—</div><div class="small" id="subpnl"></div></div>
     </header>
 
     <div class="grid">
@@ -141,7 +142,10 @@ async function unlock(){
 function render(){
   const p=DATA.performance;
   document.getElementById('updated').textContent="updated "+DATA.generated;
-  const t=document.getElementById('total'); t.textContent=money(p.total); t.className="total "+cls(p.total);
+  const eq=document.getElementById('equity');
+  eq.textContent = p.equity!=null ? "$"+p.equity.toLocaleString(undefined,{maximumFractionDigits:0}) : money(p.total);
+  const ret = p.total_return_pct!=null ? ` (${p.total_return_pct>=0?"+":""}${p.total_return_pct}%)` : "";
+  document.getElementById('subpnl').innerHTML = `<span class="${cls(p.total)}">P&L ${money(p.total)}${ret}</span>`;
 
   const L={week:"Week",month:"Month",year:"Year",all:"All"};
   document.getElementById('chips').innerHTML=Object.keys(L).map(k=>
@@ -188,7 +192,10 @@ function openModal(which){
        Object.entries({week:"Week",month:"Month",year:"Year",all:"All time"}).map(([k,v])=>
        `<div class="chip"><span class="v ${cls(p.realized[k])}">${money(p.realized[k])}</span><span class="k">${v}</span></div>`).join('')+`</div>`;
   }else if(which==='summary'){
-    const rows=[["Total P&L",money(p.total)],["Realized (all time)",money(p.realized.all)],["Open / unrealized",money(p.unrealized)],
+    const fmt=v=> v==null?"—":"$"+v.toLocaleString(undefined,{maximumFractionDigits:0});
+    const rows=[["Account value (equity)",fmt(p.equity)],["Starting capital",fmt(p.starting_capital)],
+      ["Cash balance",fmt(p.balance)],["Total return",(p.total_return_pct??"—")+"%"],
+      ["Total P&L",money(p.total)],["Realized (all time)",money(p.realized.all)],["Open / unrealized",money(p.unrealized)],
       ["Win rate",(p.win_rate??"—")+"%"],["Record",`${p.wins}W / ${p.losses}L`],["Avg per trade",(p.avg_pct??"—")+"%"],
       ["Best trade",p.best?`${p.best.sym} ${p.best.pct}%`:"—"],["Worst trade",p.worst?`${p.worst.sym} ${p.worst.pct}%`:"—"],
       ["$ data coverage",p.usd_coverage]];
