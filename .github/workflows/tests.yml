@@ -1,0 +1,24 @@
+name: Tests
+
+# Run the X-ray reliability tests on every code change, so the score logic can never
+# silently regress. (State commits use "[skip ci]", so they don't trigger this.)
+on:
+  push:
+    paths: ["*.py", ".github/workflows/tests.yml"]
+  pull_request:
+    paths: ["*.py"]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install yfinance requests pandas
+      - name: Run X-ray score tests
+        run: python -m unittest test_xray -v

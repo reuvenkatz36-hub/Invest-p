@@ -173,9 +173,37 @@ def _fetch(sym):
     return out
 
 
+def _normalize_units(info):
+    """Defend the score against yfinance scale glitches across versions: ratios are expected as
+    fractions (0.46 = 46%), but some versions return percentages (46). Detect the percentage
+    form by magnitude and convert. Applied exactly once, at the start of evaluate()."""
+    # margins: a POSITIVE value > 1.5 can't be a fraction (>150% margin) -> it's a percentage.
+    # (negative margins can legitimately be large fractions for cash-burners, so leave those.)
+    for k in ("grossMargins", "profitMargins", "operatingMargins"):
+        v = info.get(k)
+        if isinstance(v, (int, float)) and v > 1.5:
+            info[k] = v / 100.0
+    # ROE/ROA can legitimately exceed 100% (e.g. AAPL ~1.5), so only treat very large as percent
+    for k in ("returnOnEquity", "returnOnAssets"):
+        v = info.get(k)
+        if isinstance(v, (int, float)) and abs(v) > 5:
+            info[k] = v / 100.0
+    # growth: a fraction can be >1 (161% = 1.61); only >5 (>500%) signals a percentage form
+    for k in ("revenueGrowth", "earningsGrowth", "earningsQuarterlyGrowth"):
+        v = info.get(k)
+        if isinstance(v, (int, float)) and abs(v) > 5:
+            info[k] = v / 100.0
+    # short % of float and dividend yield are fractions; >1.x means a percentage slipped through
+    for k, cut in (("shortPercentOfFloat", 1.5), ("dividendYield", 1.0)):
+        v = info.get(k)
+        if isinstance(v, (int, float)) and v > cut:
+            info[k] = v / 100.0
+    return info
+
+
 def evaluate(data):
     """Turn raw fundamentals into scored, flagged, explained items + a bottom line."""
-    info = data.get("info") or {}
+    info = _normalize_units(data.get("info") or {})
     g = info.get
     items = []
 
@@ -272,7 +300,7 @@ def evaluate(data):
     fwd_known = eg is not None or (tgt is not None and price is not None)
     fwd_ok = ((eg or 0) > 0) or (tgt is not None and price is not None and tgt > price * 1.05)
     fwd_val = "צופים שיפור" if fwd_ok else ("צופים האטה" if fwd_known else "אין נתון")
-    add("איתותים לעתיד", "תחזית קדימה (רווח/יעד אנליסטים)", fwd_val, f3(fwd_ok, fwd_known), W_FORWARD,
+    add("איתותים לעתיד", "תחזית קדימה (צמיחת רווח/מחיר יעד)", fwd_val, f3(fwd_ok, fwd_known), W_FORWARD,
         "ההמשך צפוי להיות טוב יותר" if fwd_ok else "התחזיות לא מלהיבות")
     ins = data.get("insider_net")
     ins_known = ins is not None
@@ -522,8 +550,10 @@ def xray_text(sym, res=None):
     if not res.get("ok"):
         return None
     sector = f"  ({res['sector']})" if res.get("sector") else ""
+    known = sum(1 for it in res["items"] if it["flag"] in ("green", "red"))
     lines = [f"🩻 רנטגן פונדמנטלי — {sym}{sector}",
-             f"ציון בריאות: {res['score']}/10 — {res['verdict']}"]
+             f"ציון בריאות: {res['score']}/10 — {res['verdict']}",
+             f"📊 כיסוי נתונים: {known}/{len(res['items'])} בדיקות ({int(res.get('coverage', 0) * 100)}%)"]
     note = _confidence_note(res)
     if note:
         lines.append(note)
