@@ -381,12 +381,12 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
         xr = h.get("xray")
         if xr and xr.get("ok"):
-            lines.append(f"  🩻 ציון בריאות: {xr['score']}/10 ({xr['verdict']})")
-            lines.append(f"  💡 הזדמנות: {xr['opportunity']}")
-            lines.append(f"  ⚠️ סכנה: {xr['danger']}")
+            lines.append(f"  🩻 Health score: {xr['score']}/10 ({xr['verdict']})")
+            lines.append(f"  💡 Opportunity: {xr['opportunity']}")
+            lines.append(f"  ⚠️ Danger: {xr['danger']}")
             if xr.get("ai_verdict"):
                 lines.append(f"  🤖 {xr['ai_verdict']}")
-            lines.append(f"  לרנטגן המלא בצ'אט: /xray {h['sym']}")
+            lines.append(f"  Full X-ray in chat: /xray {h['sym']}")
         for title in h["news"]:
             lines.append(f"  • {title}")
         if h["news"]:

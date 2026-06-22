@@ -49,7 +49,7 @@ def _shares_of(p):
     return None
 
 
-def _performance(closed, unrealized):
+def _performance(closed, unrealized, starting_capital):
     today = datetime.date.today()
     spans = {"week": 7, "month": 30, "year": 365, "all": 10 ** 6}
     realized = {k: 0.0 for k in spans}
@@ -81,7 +81,14 @@ def _performance(closed, unrealized):
     pct = [t.get("pnl_pct") for t in closed if t.get("pnl_pct") is not None]
     best = max(closed, key=lambda t: t.get("pnl_pct", -999), default=None)
     worst = min(closed, key=lambda t: t.get("pnl_pct", 999), default=None)
+    realized_all = realized["all"]
+    balance = round(starting_capital + realized_all, 2)              # cash + closed P&L
+    equity = round(starting_capital + realized_all + (unrealized or 0), 2)  # like TradingView equity
     return {
+        "starting_capital": round(starting_capital, 2),
+        "balance": balance,
+        "equity": equity,
+        "total_return_pct": round((equity / starting_capital - 1) * 100, 2) if starting_capital else None,
         "realized": {k: round(v, 2) for k, v in realized.items()},
         "unrealized": round(unrealized or 0, 2),
         "total": round(realized["all"] + (unrealized or 0), 2),
@@ -159,11 +166,11 @@ def _ai_news_summary(items):
         resp = client.messages.create(
             model=os.environ.get("CHAT_MODEL", "claude-sonnet-4-6"),
             max_tokens=700,
-            system="אתה אנליסט שמסכם חדשות שוק ההון בקצרה ובפשטות. כן וענייני. לא ייעוץ השקעות.",
+            system="You summarize stock-market news briefly and plainly. Honest and concrete. Not financial advice.",
             messages=[{"role": "user", "content":
-                       "אלה כותרות החדשות האחרונות על המניות שלי ורשימת המעקב. סכם בעברית ב-4-6 "
-                       "נקודות את מה שהכי חשוב ורלוונטי לי לדעת השבוע (מי שזז, מה הסיבה, על מה לשים לב):\n\n"
-                       + headlines}],
+                       "These are the latest headlines on my holdings and watchlist. In 4-6 bullet points, "
+                       "summarize what's most important and relevant for me to know this week (what's moving, "
+                       "why, and what to watch):\n\n" + headlines}],
         )
         return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
     except Exception as e:
@@ -193,9 +200,11 @@ def main():
 
     holdings, unrealized = _holdings(opens)
     symbols = list(dict.fromkeys([p["sym"] for p in opens] + watch))
+    starting_capital = float(trades.get("account", {}).get("starting_capital")
+                             or os.environ.get("START_CAPITAL") or 100000)
     data = {
         "generated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-        "performance": _performance(closed, unrealized),
+        "performance": _performance(closed, unrealized, starting_capital),
         "holdings": holdings,
         "watchlist": _watchlist(watch),
         "news": _news(symbols),

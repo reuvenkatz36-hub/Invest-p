@@ -5,7 +5,8 @@ name: Build Dashboard
 # new data file updates the live site automatically.
 on:
   schedule:
-    - cron: "23 */4 * * *"     # every ~4 hours
+    - cron: "23 */4 * * *"      # every ~4 hours during the day
+    - cron: "30 20 * * 1-5"     # ~30 min after the US market close (weekdays) -> end-of-day update
   workflow_dispatch: {}
 
 concurrency:
