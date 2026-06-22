@@ -31,6 +31,26 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "FLEX",
+      "entry": 151.0,
+      "amount": 4983.0,
+      "shares": 33,
+      "date": "2026-06-22",
+      "setup": {
+        "rev_status": "unknown"
+      }
+    },
+    {
+      "sym": "CRVL",
+      "entry": 61.0,
+      "amount": 2013.0,
+      "shares": 33,
+      "date": "2026-06-22",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": [
