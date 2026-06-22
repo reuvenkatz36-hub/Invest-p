@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>📈 My Stock Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{--bg:#0f1115;--card:#181b22;--line:#262b36;--txt:#e7eaf0;--mut:#8b93a7;--grn:#22c55e;--red:#ef4444;--accent:#6aa3ff;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  .wrap{max-width:760px;margin:0 auto;padding:16px;}
+  h1{font-size:20px;margin:0}
+  .mut{color:var(--mut)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0;}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .grn{color:var(--grn)} .red{color:var(--red)}
+  .hero{font-size:38px;font-weight:700;margin:4px 0}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .chip{flex:1;min-width:70px;text-align:center;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px;cursor:pointer}
+  .chip.active{border-color:var(--accent);background:#1b2740}
+  .chip .v{font-size:17px;font-weight:700;display:block}
+  .chip .k{font-size:11px;color:var(--mut)}
+  table{width:100%;border-collapse:collapse}
+  td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+  th{color:var(--mut);font-weight:600;font-size:12px}
+  .badge{display:inline-block;min-width:34px;text-align:center;border-radius:8px;padding:2px 6px;font-weight:700;font-size:13px}
+  .tabbar{display:flex;gap:8px;position:sticky;top:0;background:var(--bg);padding:10px 0;z-index:5}
+  .tab{flex:1;text-align:center;padding:9px;border-radius:10px;background:var(--card);border:1px solid var(--line);cursor:pointer;font-weight:600}
+  .tab.active{background:#1b2740;border-color:var(--accent)}
+  .hide{display:none}
+  .news-sum{white-space:pre-wrap}
+  a{color:var(--accent);text-decoration:none}
+  .small{font-size:12px}
+  #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:24px;text-align:center}
+  input,button{font:inherit}
+  input[type=password]{background:var(--card);border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:12px;width:min(320px,80vw)}
+  button.go{background:var(--accent);border:0;color:#06122c;font-weight:700;border-radius:10px;padding:12px 20px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>📈 My Stock Dashboard</h1>
+  <p class="mut">Enter your password to unlock.</p>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
+  <button class="go" onclick="unlock()">Unlock</button>
+  <p id="err" class="red small"></p>
+</div>
+
+<div id="app" class="hide">
+  <div class="wrap">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h1>📈 Dashboard</h1>
+      <span class="mut small" id="updated"></span>
+    </div>
+
+    <div class="tabbar">
+      <div class="tab active" data-tab="perf" onclick="tab('perf')">Performance</div>
+      <div class="tab" data-tab="hold" onclick="tab('hold')">Holdings</div>
+      <div class="tab" data-tab="watch" onclick="tab('watch')">Watchlist</div>
+      <div class="tab" data-tab="news" onclick="tab('news')">News</div>
+    </div>
+
+    <!-- PERFORMANCE -->
+    <div id="perf">
+      <div class="card">
+        <div class="mut small">Total profit/loss (realized + open)</div>
+        <div class="hero" id="total">—</div>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="card"><canvas id="chart" height="180"></canvas></div>
+      <div class="card">
+        <div class="row" id="stats"></div>
+      </div>
+    </div>
+
+    <!-- HOLDINGS -->
+    <div id="hold" class="hide"><div class="card"><table id="holdtbl"></table></div></div>
+
+    <!-- WATCHLIST -->
+    <div id="watch" class="hide"><div class="card"><table id="watchtbl"></table></div></div>
+
+    <!-- NEWS -->
+    <div id="news" class="hide">
+      <div class="card"><b>🧠 What matters this week</b><div class="news-sum" id="newssum" dir="auto" style="margin-top:8px"></div></div>
+      <div class="card"><div id="newslist"></div></div>
+    </div>
+
+    <p class="mut small" style="text-align:center;margin:20px 0">Not financial advice. Data is best-effort from free sources.</p>
+  </div>
+</div>
+
+<script>
+let DATA=null, chart=null;
+const money=n=> (n>=0?"+":"−")+"$"+Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const cls=n=> n>=0?"grn":"red";
+const scoreColor=s=> s==null?"#8b93a7": s>=8?"#22c55e": s>=6?"#84cc16": s>=4?"#eab308":"#ef4444";
+
+async function deriveKey(pw, salt){
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:200000, hash:'SHA-256'},
+    km, {name:'AES-GCM', length:256}, false, ['decrypt']);
+}
+async function decryptBlob(b64, pw){
+  const raw = Uint8Array.from(atob(b64.trim()), c=>c.charCodeAt(0));
+  const key = await deriveKey(pw, raw.slice(0,16));
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv: raw.slice(16,28)}, key, raw.slice(28));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+async function unlock(){
+  const pw = document.getElementById('pw').value;
+  document.getElementById('err').textContent="";
+  try{
+    const blob = await (await fetch('data/dashboard.enc?'+Date.now())).text();
+    DATA = await decryptBlob(blob, pw);
+    sessionStorage.setItem('dpw', pw);
+    document.getElementById('login').classList.add('hide');
+    document.getElementById('app').classList.remove('hide');
+    render();
+  }catch(e){
+    document.getElementById('err').textContent = "Wrong password, or the dashboard data isn't published yet.";
+  }
+}
+
+function tab(name){
+  ['perf','hold','watch','news'].forEach(t=>{
+    document.getElementById(t).classList.toggle('hide', t!==name);
+    document.querySelector(`.tab[data-tab=${t}]`).classList.toggle('active', t===name);
+  });
+}
+
+function render(){
+  const p=DATA.performance;
+  document.getElementById('updated').textContent = "updated "+DATA.generated;
+  const tot=document.getElementById('total');
+  tot.textContent = money(p.total); tot.className = "hero "+cls(p.total);
+
+  const labels={week:"Week",month:"Month",year:"Year",all:"All time"};
+  document.getElementById('chips').innerHTML = Object.keys(labels).map(k=>
+    `<div class="chip"><span class="v ${cls(p.realized[k])}">${money(p.realized[k])}</span><span class="k">${labels[k]} realized</span></div>`).join('');
+
+  const s=[];
+  if(p.win_rate!=null) s.push(["Win rate", p.win_rate+"%"]);
+  s.push(["Record", `${p.wins}W / ${p.losses}L`]);
+  if(p.avg_pct!=null) s.push(["Avg / trade", p.avg_pct+"%"]);
+  if(p.best) s.push(["Best", `${p.best.sym} ${p.best.pct}%`]);
+  if(p.worst) s.push(["Worst", `${p.worst.sym} ${p.worst.pct}%`]);
+  s.push(["Open P&L", money(p.unrealized)]);
+  document.getElementById('stats').innerHTML = s.map(([k,v])=>
+    `<div style="flex:1;min-width:90px"><div class="mut small">${k}</div><div style="font-weight:700">${v}</div></div>`).join('');
+
+  drawChart(p.curve);
+
+  // holdings
+  let h="<tr><th>Stock</th><th>Entry→Now</th><th>P&L</th><th>Health</th></tr>";
+  (DATA.holdings||[]).forEach(x=>{
+    const pl = x.pnl_pct==null?"—":`<span class="${cls(x.pnl_pct)}">${x.pnl_pct>0?"+":""}${x.pnl_pct}%${x.pnl_usd!=null?" ("+money(x.pnl_usd)+")":""}</span>`;
+    h+=`<tr><td><b>${x.sym}</b></td><td>$${x.entry} → ${x.price?"$"+x.price:"—"}</td><td>${pl}</td>
+        <td><span class="badge" style="background:${scoreColor(x.score)};color:#06122c">${x.score??"?"}</span></td></tr>`;
+  });
+  document.getElementById('holdtbl').innerHTML = h;
+  if(!(DATA.holdings||[]).length) document.getElementById('holdtbl').innerHTML="<tr><td class='mut'>No open positions.</td></tr>";
+
+  // watchlist
+  let w="<tr><th>Stock</th><th>Price</th><th>Setup</th><th>Health</th></tr>";
+  (DATA.watchlist||[]).forEach(x=>{
+    w+=`<tr><td><b>${x.sym}</b></td><td>${x.price?"$"+x.price:"—"}</td><td>${x.setup||"—"}</td>
+        <td><span class="badge" style="background:${scoreColor(x.score)};color:#06122c">${x.score??"?"}</span></td></tr>`;
+  });
+  document.getElementById('watchtbl').innerHTML = w;
+  if(!(DATA.watchlist||[]).length) document.getElementById('watchtbl').innerHTML="<tr><td class='mut'>Watchlist empty. Add with /watch in the bot.</td></tr>";
+
+  // news
+  document.getElementById('newssum').textContent = DATA.news?.summary || "No summary available (add an Anthropic key to enable it).";
+  document.getElementById('newslist').innerHTML = (DATA.news?.items||[]).map(it=>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><span class="mut small">[${it.sym}]</span> `+
+    `${it.link?`<a href="${it.link}" target="_blank" rel="noopener">${it.title}</a>`:it.title}`+
+    `${it.source?` <span class="mut small">· ${it.source}</span>`:""}</div>`).join('') || "<span class='mut'>No news.</span>";
+}
+
+function drawChart(curve){
+  const ctx=document.getElementById('chart');
+  if(chart) chart.destroy();
+  const pts=(curve||[]).map(p=>({x:p.date,y:p.cum}));
+  const up = pts.length && pts[pts.length-1].y>=0;
+  chart=new Chart(ctx,{type:'line',
+    data:{labels:pts.map(p=>p.x),datasets:[{label:'Cumulative P&L ($)',data:pts.map(p=>p.y),
+      borderColor:up?'#22c55e':'#ef4444',backgroundColor:(up?'#22c55e':'#ef4444')+'22',fill:true,tension:.2,pointRadius:3}]},
+    options:{plugins:{legend:{display:false}},scales:{
+      x:{ticks:{color:'#8b93a7',maxTicksLimit:6},grid:{color:'#262b36'}},
+      y:{ticks:{color:'#8b93a7',callback:v=>"$"+v},grid:{color:'#262b36'}}}}});
+}
+
+// auto-unlock if we already entered the password this session
+window.addEventListener('load',()=>{
+  const pw=sessionStorage.getItem('dpw');
+  if(pw){ document.getElementById('pw').value=pw; unlock(); }
+  document.getElementById('pw').addEventListener('keydown',e=>{ if(e.key==='Enter') unlock(); });
+});
+</script>
+</body>
+</html>
