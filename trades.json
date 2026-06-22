@@ -95,5 +95,10 @@
       "pnl_usd": null,
       "close_date": "2026-06-19"
     }
+  ],
+  "watch": [
+    "CLBT",
+    "CRVL",
+    "FLEX"
   ]
 }
