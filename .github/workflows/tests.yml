@@ -20,5 +20,8 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install yfinance requests pandas
-      - name: Run X-ray score tests
-        run: python -m unittest test_xray -v
+      - name: Run tests
+        env:
+          TELEGRAM_TOKEN: "x"
+          TELEGRAM_CHAT_ID: "1"
+        run: python -m unittest test_xray test_signal -v
