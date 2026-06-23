@@ -31,16 +31,6 @@
       "setup": {
         "rev_status": "unknown"
       }
-    },
-    {
-      "sym": "FLEX",
-      "entry": 151.0,
-      "amount": 4983.0,
-      "shares": 33,
-      "date": "2026-06-22",
-      "setup": {
-        "rev_status": "unknown"
-      }
     }
   ],
   "closed": [
@@ -104,6 +94,21 @@
       "outcome": "loss",
       "pnl_usd": null,
       "close_date": "2026-06-19"
+    },
+    {
+      "sym": "FLEX",
+      "entry": 151.0,
+      "amount": 4983.0,
+      "shares": 33,
+      "date": "2026-06-22",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 145.68,
+      "pnl_pct": -3.523178807947015,
+      "outcome": "loss",
+      "pnl_usd": -175.55999999999977,
+      "close_date": "2026-06-23"
     }
   ],
   "watch": [
