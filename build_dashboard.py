@@ -128,7 +128,7 @@ def _watchlist(watch):
         res = xray.xray(sym, ai=False)
         setup = "—"
         try:
-            data = yf.download(sym, period="1y", interval="1d", auto_adjust=True,
+            data = yf.download(sym, period="2y", interval="1d", auto_adjust=True,
                                progress=False, threads=False)
             ohlcv = sb.get_ohlcv(data, sym)
             r = sb.evaluate(*ohlcv) if ohlcv else None

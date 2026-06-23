@@ -176,7 +176,7 @@ def get_updates(offset, wait=0):
 def analyze_symbol(sym):
     """Returns (evaluate_dict_or_None, rev_status, rev_label, news_list)."""
     try:
-        data = yf.download(sym, period="1y", interval="1d", auto_adjust=True,
+        data = yf.download(sym, period="2y", interval="1d", auto_adjust=True,
                            progress=False, threads=False)
     except Exception:
         return None, "unknown", "rev n/a", []
@@ -199,11 +199,11 @@ def rule_report(sym, r, rev_status, rev_label, news):
              f"{chk(r['near_support'])} Pulled back near support",
              f"{chk(r['in_zone'])} In the {sb.ENTRY_MIN_PCT:.0f}-{sb.ENTRY_MAX_PCT:.0f}% buy zone off the low",
              f"{chk(r['volume_ok'])} Bounce volume above average",
-             f"{chk(not r.get('crash_risk'))} No violent crash in the past year",
+             f"{chk(not r.get('erratic'))} No wild single-day swings (past 2 years)",
              f"{rev_icon} {rev_label}"]
-    if r.get("crash_risk"):
-        verdict = (f"\U0001F534 AVOID — had a {r.get('max_drop')}% single-day crash in the past year. "
-                   "Too unpredictable for this strategy, so the bot won't suggest it.")
+    if r.get("erratic"):
+        verdict = (f"\U0001F534 AVOID — had a {r.get('worst_swing')}% single-day swing (up or down) in the "
+                   "past 2 years. Too erratic/inconsistent to trust, so the bot won't suggest it.")
     elif r["fires"] and rev_status == "yes":
         verdict = "\U0001F7E2 STRONG — matches the full buy setup."
     elif r["pulled_back"]:
@@ -517,7 +517,7 @@ def analyze_and_report(sym, trades):
 def quick_eval(sym):
     """Lightweight analyze for /scan: chart + revenue, but skips the news fetch."""
     try:
-        data = yf.download(sym, period="1y", interval="1d", auto_adjust=True,
+        data = yf.download(sym, period="2y", interval="1d", auto_adjust=True,
                            progress=False, threads=False)
     except Exception:
         return None, "unknown"
@@ -646,8 +646,8 @@ def handle_scan(trades):
         if r is None:
             lines.append(f"• {sym}: no data")
             continue
-        if r.get("crash_risk"):
-            tag = f"\U0001F534 AVOID — {r.get('max_drop')}% crash in the past year"
+        if r.get("erratic"):
+            tag = f"\U0001F534 AVOID — {r.get('worst_swing')}% single-day swing (erratic)"
         elif r["fires"] and rev_status == "yes":
             tag = "\U0001F7E2 STRONG buy setup"
         elif r["fires"]:
