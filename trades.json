@@ -112,9 +112,7 @@
     }
   ],
   "watch": [
-    "CLBT",
-    "CRVL",
-    "FLEX"
+    "CLBT"
   ],
   "account": {
     "starting_capital": 100000
