@@ -78,7 +78,7 @@ NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tig
 RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not a stale one)
 VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
-MAX_SWING_PCT = 20.0   # reject a stock if ANY single day (up OR down) moved this % or more — too erratic
+MAX_SWING_PCT = 15.0   # reject a stock if ANY single day (up OR down) moved this % or more — too erratic
 CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
