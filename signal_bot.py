@@ -78,7 +78,7 @@ NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tig
 RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not a stale one)
 VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
-CRASH_DROP_PCT = 20.0  # reject a stock if any single day in the last year fell this % or more
+MAX_SWING_PCT = 20.0   # reject a stock if ANY single day (up OR down) moved this % or more — too erratic
 CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
@@ -183,13 +183,16 @@ def trendline(pivots, x):
     return slope * x + intercept, slope
 
 
-def worst_daily_drop(closes):
-    """Largest single-day decline (as a negative %) over the series — catches violent crashes/gaps."""
-    worst = 0.0
+def largest_daily_swing(closes):
+    """Biggest single-day move in EITHER direction over the series.
+    Returns (worst_drop_pct<=0, biggest_jump_pct>=0). Catches erratic, inconsistent names."""
+    worst, best = 0.0, 0.0
     for i in range(1, len(closes)):
         if closes[i - 1] > 0:
-            worst = min(worst, (closes[i] / closes[i - 1] - 1) * 100)
-    return worst
+            ch = (closes[i] / closes[i - 1] - 1) * 100
+            worst = min(worst, ch)
+            best = max(best, ch)
+    return worst, best
 
 
 def evaluate(highs, lows, closes, vols):
@@ -218,16 +221,17 @@ def evaluate(highs, lows, closes, vols):
     volume_ok = prev_avg_vol > 0 and vols[-1] > VOL_MULT * prev_avg_vol  # volume confirmation
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
-    # Crash-risk guard: reject names that have had a violent single-day plunge in the last year
-    # (e.g. CRVL's ~-32% gap). Too unpredictable for this strategy, so never suggest them.
-    max_drop = worst_daily_drop(closes)
-    crash_risk = max_drop <= -CRASH_DROP_PCT
-    fires = pulled_back and turning_up and volume_ok and not crash_risk
+    # Stability guard: reject erratic names that had a violent single-day move (up OR down) over the
+    # lookback (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
+    worst_drop, biggest_jump = largest_daily_swing(closes)
+    worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
+    erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
+    fires = pulled_back and turning_up and volume_ok and not erratic
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
                 fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
-                crash_risk=crash_risk, max_drop=round(max_drop, 1),
+                erratic=erratic, worst_swing=round(worst_swing, 1),
                 support=support, sup_slope=sup_slope)
 
 
@@ -247,7 +251,7 @@ def download_chunk(chunk, retries=3):
     """Download a chunk with retries/backoff. Returns the DataFrame or None."""
     for attempt in range(retries):
         try:
-            data = yf.download(chunk, period="1y", interval="1d", group_by="ticker",
+            data = yf.download(chunk, period="2y", interval="1d", group_by="ticker",
                                auto_adjust=True, progress=False, threads=True)
             if data is not None and len(data) > 0:
                 return data
