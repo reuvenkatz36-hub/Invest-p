@@ -25,6 +25,7 @@ NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 # --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
 REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
                                    # (drops both declining and unverifiable 'n/a' names)
+MIN_SCORE = int(os.environ.get("MIN_SCORE", "9"))   # only suggest stocks with a health score >= this
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
 # Fallback universe (curated large caps) used only if the live screener fetch
@@ -352,9 +353,9 @@ def news_link(sym):
 
 
 def enrich_hits(hits):
-    """For each chart-screen hit, add the YoY revenue status and recent news.
-    Drops names whose revenue is clearly declining (if DROP_IF_REVENUE_DECLINING).
-    Returns a list of dicts."""
+    """For each chart-screen hit, add YoY revenue + the X-ray score, and only KEEP names whose
+    fundamental health score is >= MIN_SCORE. The cheap rule score is computed first so we don't
+    waste an AI call on names that won't make the cut. Returns a list of dicts."""
     enriched = []
     for sym, r in hits:
         status, rev_label = revenue_growth(sym)
@@ -362,13 +363,15 @@ def enrich_hits(hits):
             reason = "declining" if status == "no" else "growth unverifiable"
             print(f"  drop {sym}: {rev_label} ({reason})")
             continue
-        news = fetch_news(sym)
-        try:
-            # Sonnet sharpens the verdict; web search per setup is opt-in (XRAY_WEB=1) to control cost
-            xr = xray.xray(sym, ai=True, web=os.environ.get("XRAY_WEB") == "1")
+        xr = xray.xray(sym, ai=False)                       # cheap rule-based score first
+        if not xr.get("ok") or (xr.get("score") or 0) < MIN_SCORE:
+            print(f"  drop {sym}: health score {xr.get('score') if xr.get('ok') else 'n/a'} < {MIN_SCORE}")
+            continue
+        try:                                                # passed the gate -> add the Sonnet verdict
+            xray._ai_layer(sym, xr, web=os.environ.get("XRAY_WEB") == "1")
         except Exception as e:
-            print(f"  xray failed for {sym}: {e}")
-            xr = None
+            print(f"  xray AI failed for {sym}: {e}")
+        news = fetch_news(sym)
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
         time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
     return enriched
@@ -385,12 +388,12 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     if used_fallback:
         lines.append("(used fallback symbol list — live universe fetch failed)")
     if not hits:
-        lines.append("\nNo buy setups today (in an uptrend, pulled back to a higher low, "
-                     "bouncing on volume, with growing revenue).")
+        lines.append(f"\nNo buy setups today that clear the bar (uptrend + higher-low bounce on volume + "
+                     f"growing revenue + health score ≥ {MIN_SCORE}/10, not erratic).")
         return "\n".join(lines)
 
     lines.append("")
-    lines.append("\U0001F6A8 BUY setups (ranked by fundamental health score):")
+    lines.append(f"\U0001F6A8 BUY setups (health score ≥ {MIN_SCORE}/10, ranked):")
     hits = sorted(hits, key=lambda h: (h.get("xray") or {}).get("score", 0), reverse=True)
     for h in hits:
         r = h["r"]
