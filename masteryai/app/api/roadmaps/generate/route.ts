@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthUser, createClient, getUserPlan } from '@/lib/supabase/server'
+import { getAuthUser, createClient } from '@/lib/supabase/server'
 import { anthropic, MODEL, roadmapPrompt } from '@/lib/anthropic'
 import { ExperienceLevel } from '@/lib/types'
 import { extractJSON } from '@/lib/utils'
@@ -14,16 +14,6 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = await createClient()
-  const plan = await getUserPlan(user.id)
-
-  // Free tier: only 1 roadmap allowed
-  if (plan === 'free') {
-    const { count } = await supabase.from('roadmaps').select('id', { count: 'exact' }).eq('user_id', user.id)
-    if ((count ?? 0) >= 1) {
-      return NextResponse.json({ error: 'upgrade_required', message: 'Free plan allows 1 roadmap. Upgrade to Premium for unlimited roadmaps.' }, { status: 403 })
-    }
-  }
-
   const prompts = roadmapPrompt(goal, experience_level as ExperienceLevel, hours_per_week)
 
   const message = await anthropic.messages.create({
@@ -42,7 +32,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 })
   }
 
-  // Save roadmap to DB
   const { data: roadmap, error: roadmapError } = await supabase.from('roadmaps').insert({
     user_id: user.id,
     goal,
@@ -56,13 +45,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to save roadmap' }, { status: 500 })
   }
 
-  // Save modules
   const moduleRows = modules.map((m, i) => ({
     roadmap_id: roadmap.id,
     title: m.title,
     description: m.description,
     order_index: i,
-    is_locked: i > 0, // first module unlocked, rest locked
+    is_locked: i > 0,
   }))
 
   const { data: savedModules, error: moduleError } = await supabase
@@ -74,7 +62,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to save modules' }, { status: 500 })
   }
 
-  // Create placeholder lessons for each module (3 lessons per module)
   const lessonRows: Array<{ module_id: string; title: string; order_index: number; is_generated: boolean }> = []
   for (const module of savedModules) {
     const moduleData = modules[savedModules.indexOf(module)]
@@ -91,8 +78,7 @@ export async function POST(req: NextRequest) {
 
   await supabase.from('lessons').insert(lessonRows)
 
-  // Create knowledge nodes
-  const nodeRows = modules.map((m, i) => ({
+  const nodeRows = modules.map((m) => ({
     roadmap_id: roadmap.id,
     skill_name: m.title,
     is_completed: false,
@@ -100,7 +86,6 @@ export async function POST(req: NextRequest) {
   }))
   await supabase.from('knowledge_nodes').insert(nodeRows)
 
-  // Initialize streak record
   await supabase.from('learning_streaks').upsert({
     user_id: user.id,
     current_streak: 0,

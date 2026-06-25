@@ -52,14 +52,6 @@ export function CoachWidget() {
       })
 
       if (!res.ok) {
-        const err = await res.json()
-        if (err.upgrade_required) {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: '✨ The AI Coach is a Premium feature. [Upgrade to Premium](/upgrade) to unlock 24/7 personalized coaching!'
-          }])
-          return
-        }
         throw new Error('Failed')
       }
 

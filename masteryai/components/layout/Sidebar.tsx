@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { BookOpen, LayoutDashboard, Map, MessageCircle, Network, Settings, Zap, LogOut, Sparkles } from 'lucide-react'
+import { LayoutDashboard, Map, MessageCircle, Settings, LogOut, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -56,17 +56,7 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Upgrade CTA for free users */}
       <div className="px-3 pb-4">
-        <Link href="/upgrade">
-          <div className="rounded-lg bg-gradient-to-br from-violet-500/10 to-indigo-500/10 border border-violet-200 dark:border-violet-800 p-3 cursor-pointer hover:from-violet-500/20 hover:to-indigo-500/20 transition-all">
-            <div className="flex items-center gap-2 mb-1.5">
-              <Zap className="w-4 h-4 text-violet-600" />
-              <span className="text-sm font-semibold text-violet-600">Go Premium</span>
-            </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Unlock AI Coach, unlimited roadmaps & more</p>
-          </div>
-        </Link>
         <Button
           variant="ghost"
           size="sm"

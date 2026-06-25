@@ -1,4 +1,3 @@
-export type Plan = 'free' | 'premium'
 export type ExperienceLevel = 'beginner' | 'intermediate' | 'advanced'
 export type CoachRole = 'user' | 'assistant'
 export type AssignmentType = 'project' | 'reflection'
@@ -6,9 +5,6 @@ export type AssignmentType = 'project' | 'reflection'
 export interface Profile {
   id: string
   user_id: string
-  plan: Plan
-  stripe_customer_id: string | null
-  stripe_subscription_id: string | null
   created_at: string
 }
 

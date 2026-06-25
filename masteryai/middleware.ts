@@ -28,11 +28,10 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname
 
   const authRoutes = ['/login', '/signup', '/forgot-password']
-  const protectedRoutes = ['/dashboard', '/roadmaps', '/coach', '/onboarding', '/knowledge-graph', '/settings', '/upgrade']
+  const protectedRoutes = ['/dashboard', '/roadmaps', '/coach', '/onboarding', '/knowledge-graph', '/settings']
   const isAuthRoute = authRoutes.some(r => path.startsWith(r))
   const isProtected = protectedRoutes.some(r => path.startsWith(r))
   const isApiRoute = path.startsWith('/api')
-  const isStripeWebhook = path === '/api/stripe/webhook'
 
   if (!user && isProtected) {
     return NextResponse.redirect(new URL('/login', request.url))
@@ -42,7 +41,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
-  if (!user && isApiRoute && !isStripeWebhook) {
+  if (!user && isApiRoute) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

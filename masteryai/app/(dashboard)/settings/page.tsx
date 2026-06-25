@@ -1,16 +1,11 @@
-import { createClient, getAuthUser } from '@/lib/supabase/server'
+import { getAuthUser } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
 
 export default async function SettingsPage() {
   const user = await getAuthUser()
   if (!user) redirect('/login')
-
-  const supabase = await createClient()
-  const { data: profile } = await supabase.from('profiles').select('*').eq('user_id', user.id).single()
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -31,21 +26,10 @@ export default async function SettingsPage() {
             </div>
             <div className="flex items-center justify-between py-2">
               <div>
-                <p className="text-sm font-medium">Plan</p>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                  {profile?.plan === 'premium' ? 'Premium — full access' : 'Free — limited access'}
-                </p>
+                <p className="text-sm font-medium">Access</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Full access — all features unlocked</p>
               </div>
-              <div className="flex items-center gap-3">
-                <Badge variant={profile?.plan === 'premium' ? 'success' : 'secondary'} className="capitalize">
-                  {profile?.plan ?? 'free'}
-                </Badge>
-                {profile?.plan !== 'premium' && (
-                  <Link href="/upgrade">
-                    <Button size="sm">Upgrade</Button>
-                  </Link>
-                )}
-              </div>
+              <Badge variant="success">Active</Badge>
             </div>
           </CardContent>
         </Card>

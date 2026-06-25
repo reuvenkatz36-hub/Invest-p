@@ -66,11 +66,6 @@ export function LessonContent({ lessonId, lessonTitle, roadmapId, moduleId, cach
         })
 
         if (!res.ok) {
-          const err = await res.json()
-          if (err.error === 'upgrade_required') {
-            router.push('/upgrade?reason=lesson')
-            return
-          }
           throw new Error('Failed to generate lesson')
         }
 

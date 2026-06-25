@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthUser, createClient, getUserPlan } from '@/lib/supabase/server'
+import { getAuthUser, createClient } from '@/lib/supabase/server'
 import { anthropic, MODEL, lessonPrompt } from '@/lib/anthropic'
 import { ExperienceLevel, LessonSection } from '@/lib/types'
 
@@ -35,12 +35,6 @@ export async function POST(req: NextRequest) {
   const roadmap = (lesson.module as unknown as { roadmap: { user_id: string; goal: string; experience_level: string } }).roadmap
   if (roadmap.user_id !== user.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  // Free plan gate: only first 3 lessons per module
-  const plan = await getUserPlan(user.id)
-  if (plan === 'free' && lesson.order_index >= 3) {
-    return NextResponse.json({ error: 'upgrade_required', message: 'Free plan includes the first 3 lessons per module. Upgrade to unlock all lessons.' }, { status: 403 })
   }
 
   // Return cached content if already generated

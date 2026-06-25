@@ -1,11 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, MessageCircle, Lock } from 'lucide-react'
+import { Send, Loader2, MessageCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import Link from 'next/link'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -16,14 +15,12 @@ export default function CoachPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [isPremium, setIsPremium] = useState(true)
   const [initialized, setInitialized] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     async function init() {
       const res = await fetch('/api/coach/daily')
-      if (res.status === 403) { setIsPremium(false); setInitialized(true); return }
       const data = await res.json()
       if (data.message) setMessages([{ role: 'assistant', content: data.message }])
       setInitialized(true)
@@ -49,13 +46,6 @@ export default function CoachPage() {
         body: JSON.stringify({ message: userMsg }),
       })
 
-      if (res.status === 403) {
-        setIsPremium(false)
-        setMessages(prev => prev.slice(0, -1))
-        setLoading(false)
-        return
-      }
-
       const reader = res.body?.getReader()
       if (!reader) throw new Error('No stream')
 
@@ -77,25 +67,6 @@ export default function CoachPage() {
     } finally {
       setLoading(false)
     }
-  }
-
-  if (!isPremium) {
-    return (
-      <div className="max-w-2xl mx-auto text-center py-20">
-        <div className="w-20 h-20 rounded-2xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center mx-auto mb-6">
-          <Lock className="w-10 h-10 text-violet-400" />
-        </div>
-        <h1 className="text-3xl font-bold mb-3">AI Coach is Premium</h1>
-        <p className="text-gray-500 dark:text-gray-400 mb-8 max-w-md mx-auto">
-          Get 24/7 personalized coaching, accountability, and expert guidance on your learning journey with MasteryAI Premium.
-        </p>
-        <Link href="/upgrade">
-          <Button size="xl" className="bg-gradient-to-r from-violet-600 to-indigo-600">
-            Upgrade to Premium — $19/month
-          </Button>
-        </Link>
-      </div>
-    )
   }
 
   return (

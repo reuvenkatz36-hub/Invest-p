@@ -23,29 +23,6 @@ export async function createClient() {
   )
 }
 
-export async function createServiceClient() {
-  const cookieStore = await cookies()
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      cookies: {
-        getAll() { return cookieStore.getAll() },
-        setAll() {},
-      },
-    }
-  )
-}
-
-export async function getUserPlan(userId: string): Promise<'free' | 'premium'> {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from('profiles')
-    .select('plan')
-    .eq('user_id', userId)
-    .single()
-  return (data?.plan as 'free' | 'premium') ?? 'free'
-}
 
 export async function getAuthUser() {
   const supabase = await createClient()

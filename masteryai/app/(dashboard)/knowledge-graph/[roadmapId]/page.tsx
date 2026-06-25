@@ -1,7 +1,7 @@
-import { createClient, getAuthUser, getUserPlan } from '@/lib/supabase/server'
+import { createClient, getAuthUser } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Lock } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { KnowledgeGraph } from '@/components/knowledge-graph/KnowledgeGraph'
 
@@ -13,26 +13,6 @@ export default async function KnowledgeGraphPage({ params }: Props) {
   const { roadmapId } = await params
   const user = await getAuthUser()
   if (!user) redirect('/login')
-
-  const plan = await getUserPlan(user.id)
-  if (plan !== 'premium') {
-    return (
-      <div className="max-w-2xl mx-auto text-center py-20">
-        <div className="w-20 h-20 rounded-2xl bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center mx-auto mb-6">
-          <Lock className="w-10 h-10 text-violet-400" />
-        </div>
-        <h1 className="text-3xl font-bold mb-3">Knowledge Graph is Premium</h1>
-        <p className="text-gray-500 dark:text-gray-400 mb-8 max-w-md mx-auto">
-          Visualize your skill dependencies, track what you've mastered, and see your path to complete mastery with MasteryAI Premium.
-        </p>
-        <Link href="/upgrade">
-          <Button size="lg" className="bg-gradient-to-r from-violet-600 to-indigo-600">
-            Upgrade to Premium — $19/month
-          </Button>
-        </Link>
-      </div>
-    )
-  }
 
   const supabase = await createClient()
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthUser, createClient, getUserPlan } from '@/lib/supabase/server'
+import { getAuthUser, createClient } from '@/lib/supabase/server'
 import { anthropic, MODEL, coachSystemPrompt } from '@/lib/anthropic'
 
 export const dynamic = 'force-dynamic'
@@ -7,12 +7,6 @@ export const dynamic = 'force-dynamic'
 export async function POST(req: NextRequest) {
   const user = await getAuthUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  // Premium gate
-  const plan = await getUserPlan(user.id)
-  if (plan !== 'premium') {
-    return NextResponse.json({ error: 'upgrade_required' }, { status: 403 })
-  }
 
   const { message } = await req.json()
   const supabase = await createClient()
