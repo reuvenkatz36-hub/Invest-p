@@ -109,6 +109,21 @@
       "outcome": "loss",
       "pnl_usd": -175.55999999999977,
       "close_date": "2026-06-23"
+    },
+    {
+      "sym": "FLEX",
+      "entry": 151.0,
+      "amount": null,
+      "shares": null,
+      "date": "2026-06-25",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 145.68,
+      "pnl_pct": -3.523178807947015,
+      "outcome": "loss",
+      "pnl_usd": null,
+      "close_date": "2026-06-25"
     }
   ],
   "watch": [
