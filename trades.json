@@ -13,21 +13,21 @@
       }
     },
     {
-      "sym": "FCFS",
-      "entry": 225.59,
-      "amount": 4962.98,
-      "shares": 22,
-      "date": "2026-06-12",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
       "sym": "KWR",
       "entry": 151.22,
       "amount": 4990.26,
       "shares": 33,
       "date": "2026-06-19",
+      "setup": {
+        "rev_status": "unknown"
+      }
+    },
+    {
+      "sym": "CNS",
+      "entry": 77.55,
+      "amount": 2016.3,
+      "shares": 26,
+      "date": "2026-06-26",
       "setup": {
         "rev_status": "unknown"
       }
@@ -124,6 +124,21 @@
       "outcome": "loss",
       "pnl_usd": null,
       "close_date": "2026-06-25"
+    },
+    {
+      "sym": "FCFS",
+      "entry": 225.59,
+      "amount": 4962.98,
+      "shares": 22,
+      "date": "2026-06-12",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 214.71,
+      "pnl_pct": -4.822908816880179,
+      "outcome": "loss",
+      "pnl_usd": -239.35999999999984,
+      "close_date": "2026-06-26"
     }
   ],
   "watch": [
