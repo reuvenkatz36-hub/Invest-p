@@ -281,14 +281,14 @@ def evaluate(data):
     # ---- Layer 4: Balance-sheet strength ---- (cash-flow-aware: strong FCF can cover debt comfortably)
     cash, debt, de, cr = g("totalCash"), g("totalDebt"), g("debtToEquity"), g("currentRatio")
     debt_known = any(v is not None for v in (cash, debt, de, cr))
-    # FCF can offset debt ONLY when leverage is not extreme (D/E < 120); high-leverage cos still flag red
-    fcf_covers = (fcf is not None and fcf > 0 and debt is not None and debt <= 4 * fcf
-                  and (de is None or de < 120))
+    # FCF offsets debt only when ~3 years of free cash flow would clear it. AAPL-style names
+    # (huge debt, but FCF clears it in ~1y) stay green; names that need 4+ years (e.g. MRSH) flag red.
+    fcf_covers = (fcf is not None and fcf > 0 and debt is not None and debt <= 3 * fcf)
     debt_ok = (
         (cash is not None and debt is not None and cash >= debt) or   # net cash position
-        fcf_covers or                                                  # FCF clears debt AND leverage modest
-        (de is not None and de < 60) or                               # genuinely low leverage
-        (cr is not None and cr >= 1.5 and (de is None or de < 100))  # liquid + not extreme
+        fcf_covers or                                                  # a few years of FCF clears it
+        (de is not None and de < 100) or                              # modest leverage
+        (cr is not None and cr >= 1.5 and (de is None or de < 200))  # liquid, not extreme
     )
     add("Balance-sheet strength", "Debt vs cash/cash-flow", f"cash {_money(cash)} vs debt {_money(debt)}",
         f3(debt_ok, debt_known), W_DEBT,
