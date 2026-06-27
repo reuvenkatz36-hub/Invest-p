@@ -200,6 +200,13 @@ def evaluate(highs, lows, closes, vols):
     if len(closes) < LEFT_K + RIGHT_K + 5:
         return None
     price = float(closes[-1]); x = len(closes) - 1
+
+    # Macro trend guard: don't issue a buy signal in an established downtrend.
+    # If the stock is >15% below its 6-month high it is in a macro downtrend — skip it.
+    lookback = min(126, len(closes))
+    high_6m = max(closes[-lookback:])
+    in_macro_downtrend = price < 0.85 * high_6m
+
     swing_highs, swing_lows = find_pivots(highs, lows, LEFT_K, RIGHT_K)
     if len(swing_lows) < 2 or len(swing_highs) < 2:
         return None
@@ -227,13 +234,14 @@ def evaluate(highs, lows, closes, vols):
     worst_drop, biggest_jump = largest_daily_swing(closes)
     worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
     erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
-    fires = pulled_back and turning_up and volume_ok and not erratic
+    fires = pulled_back and turning_up and volume_ok and not erratic and not in_macro_downtrend
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
                 fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
                 erratic=erratic, worst_swing=round(worst_swing, 1),
-                support=support, sup_slope=sup_slope)
+                support=support, sup_slope=sup_slope,
+                in_macro_downtrend=in_macro_downtrend, high_6m=round(high_6m, 2))
 
 
 def get_ohlcv(data, sym):
