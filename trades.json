@@ -13,21 +13,21 @@
       }
     },
     {
-      "sym": "KWR",
-      "entry": 151.22,
-      "amount": 4990.26,
-      "shares": 33,
-      "date": "2026-06-19",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
       "sym": "CNS",
       "entry": 77.55,
       "amount": 2016.3,
       "shares": 26,
       "date": "2026-06-26",
+      "setup": {
+        "rev_status": "unknown"
+      }
+    },
+    {
+      "sym": "HOOD",
+      "entry": 100.1,
+      "amount": 3003.0,
+      "shares": 30,
+      "date": "2026-06-29",
       "setup": {
         "rev_status": "unknown"
       }
@@ -139,6 +139,21 @@
       "outcome": "loss",
       "pnl_usd": -239.35999999999984,
       "close_date": "2026-06-26"
+    },
+    {
+      "sym": "KWR",
+      "entry": 151.22,
+      "amount": 4990.26,
+      "shares": 33,
+      "date": "2026-06-19",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 155.5,
+      "pnl_pct": 2.830313450601773,
+      "outcome": "win",
+      "pnl_usd": 141.24000000000007,
+      "close_date": "2026-06-29"
     }
   ],
   "watch": [
