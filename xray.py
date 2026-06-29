@@ -382,6 +382,10 @@ def evaluate(data):
 
     # Hard caps so an obviously risky stock can never read as "excellent":
     caps = []
+    # A perfect 10 is reserved for a clean sheet — a SINGLE red flag caps the score at 9.
+    # (Heavier or multiple red flags pull the weighted score lower than 9 on their own.)
+    if any(it["flag"] == "red" for it in items):
+        score = min(score, 9)
     if net_red and fcf_red:                 # losing money AND burning cash = speculative
         score = min(score, 4); caps.append("Losing money and burning cash")
     if ps_red:                              # priced at a huge multiple of actual sales
