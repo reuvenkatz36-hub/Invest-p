@@ -54,7 +54,8 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
              "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL",
-             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN", "DASHBOARD", "WEBSITE", "SITE", "GRAPH", "CAPITAL"}
+             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN", "DASHBOARD", "WEBSITE", "SITE", "GRAPH", "CAPITAL",
+             "FORCE"}
 
 # The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
 # you when a new candidate repeats the same mistake. Each entry is
@@ -336,7 +337,7 @@ def parse_trade(text):
 
 
 # ---------- handlers ----------
-def handle_buy(sym, price, amount, shares, trades):
+def handle_buy(sym, price, amount, shares, trades, force=False):
     # Don't double-log: if an identical open position already exists (same symbol, entry
     # and share count), treat a repeat as a no-op instead of creating a duplicate.
     for p in trades.get("open", []):
@@ -344,13 +345,34 @@ def handle_buy(sym, price, amount, shares, trades):
             return (f"ℹ️ You already have an open {sym} position at ${price:.2f} on record — "
                     "I didn't add a duplicate. Send 'positions' to see your holdings.")
     r, rev_status, rev_label, _ = analyze_symbol(sym)
+
+    # --- Hard revenue-growth gate ---
+    # Every one of your past losses was bought without confirmed YoY revenue growth, so
+    # a trade whose revenue isn't confirmed growing is BLOCKED by default. Resend with the
+    # word "force" to log it anyway (it's then tagged as off-strategy).
+    if rev_status != "yes" and not force:
+        reason = ("revenue is DECLINING" if rev_status == "no"
+                  else "revenue growth is UNCONFIRMED")
+        qty = f"{shares} " if shares else ""
+        return (f"⛔ NOT recorded — {reason} for {sym} ({rev_label}).\n\n"
+                "Confirming year-over-year revenue growth is a hard rule: every single one of "
+                "your past losses was bought without it. This is the one filter that would have "
+                "flagged all of them.\n\n"
+                "If you've done the homework and still want to log it, resend:\n"
+                f"  buy {qty}{sym} at {price:g} force\n"
+                "(the word 'force' records it, flagged as off-strategy).")
+
     if amount is None and shares is not None:   # derive $ size from shares × price
         amount = round(shares * price, 2)
-    trades.setdefault("open", []).append({
+    pos = {
         "sym": sym, "entry": price, "amount": amount, "shares": shares,
         "date": datetime.date.today().isoformat(),
         "setup": setup_snapshot(r, rev_status),
-    })
+    }
+    off_strategy = rev_status != "yes"   # only reachable here when force=True
+    if off_strategy:
+        pos["off_strategy"] = "unconfirmed_revenue"
+    trades.setdefault("open", []).append(pos)
     size = []
     if shares:
         size.append(f"{shares} sh")
@@ -358,7 +380,10 @@ def handle_buy(sym, price, amount, shares, trades):
         size.append(f"${amount:.0f}")
     extra = f" ({', '.join(size)})" if size else ""
     note = ""
-    if r is not None and not r["fires"]:
+    if off_strategy:
+        note = ("\n⚠️ Logged OFF-STRATEGY: revenue growth isn't confirmed "
+                f"({rev_label}) — the exact pattern behind your past losses.")
+    elif r is not None and not r["fires"]:
         note = "\n⚠️ Heads up: this isn't a full buy signal on our strategy right now."
     note += memory_block(sym, r, rev_status, trades)   # remind you of similar past losses
     return f"\U0001F4DD Recorded BUY {sym} @ ${price:.2f}{extra}. Good luck!{note}"
@@ -734,7 +759,8 @@ def handle_command(cmd, arg, trades):
         return handle_earnings(sym) if sym else "Usage: /earnings NVDA"
     if cmd in ("buy", "bought"):
         t = parse_trade("bought " + arg)
-        return apply_trade(t, trades) if t else "Usage: /buy 10 NVDA at 240"
+        force = re.search(r"\bforce\b", arg, re.I) is not None
+        return apply_trade(t, trades, force=force) if t else "Usage: /buy 10 NVDA at 240"
     if cmd in ("sell", "sold"):
         t = parse_trade("sold " + arg)
         return apply_trade(t, trades) if t else "Usage: /sell NVDA at 255"
@@ -781,11 +807,11 @@ def set_my_commands():
         print(f"setMyCommands failed: {e}")
 
 
-def apply_trade(trade, trades):
+def apply_trade(trade, trades, force=False):
     action, sym, price, amount, shares = trade
     if action == "sell":
         return handle_sell(sym, price, trades)
-    return handle_buy(sym, price, amount, shares, trades)
+    return handle_buy(sym, price, amount, shares, trades, force=force)
 
 
 def handle_message(text, trades):
@@ -807,12 +833,12 @@ def handle_message(text, trades):
     # A single message can hold several trades on separate lines ("bought X\nalso bought Y") —
     # handle each so none get silently dropped.
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    parsed = [parse_trade(ln) for ln in lines]
-    if sum(1 for p in parsed if p) >= 2:
-        return "\n".join(apply_trade(p, trades) for p in parsed if p)
+    parsed = [(parse_trade(ln), re.search(r"\bforce\b", ln, re.I) is not None) for ln in lines]
+    if sum(1 for p, _ in parsed if p) >= 2:
+        return "\n".join(apply_trade(p, trades, force=f) for p, f in parsed if p)
     trade = parse_trade(text)
     if trade:
-        return apply_trade(trade, trades)
+        return apply_trade(trade, trades, force=re.search(r"\bforce\b", text, re.I) is not None)
     if has("positions", "position", "portfolio", "holdings", "holding"):
         return handle_positions(trades)
     if has("history") or "my trades" in low or "track record" in low or "closed trades" in low:
