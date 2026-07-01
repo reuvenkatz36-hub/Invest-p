@@ -83,6 +83,22 @@ MAX_SWING_PCT = 15.0   # reject a stock if ANY single day (up OR down) moved thi
 CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
+# --- Cup-and-Handle detector dials (a separate, standalone breakout signal) ---
+CUP_K              = 15     # pivot significance for the cup's rims/bottom (bigger swings than LEFT_K)
+CUP_MIN_BARS       = 25     # rim-to-rim span: minimum
+CUP_MAX_BARS       = 250    # rim-to-rim span: maximum (~1 trading year)
+CUP_MIN_DEPTH_PCT  = 12.0   # cup depth (rim-bottom) as % of rim: floor (shallower = noise)
+CUP_MAX_DEPTH_PCT  = 50.0   # ceiling (deeper = a crash, not a cup)
+RIM_TOL_PCT        = 6.0    # right rim must be within this % of the left rim (roughly level)
+BOTTOM_CENTER_LO   = 0.30   # bottom must sit in the central 30-70% of the span (rounded, not a late V)
+BOTTOM_CENTER_HI   = 0.70
+ROUND_MIN_BARS     = 5      # >=5 bars within the bottom 20% of depth => rounded base, not a single-spike V
+HANDLE_MIN_BARS    = 3
+HANDLE_MAX_BARS    = 40     # handle must form within this many bars after the right rim
+HANDLE_MAX_DEPTH_FRAC = 0.5 # handle depth <= 50% of cup depth, AND its low stays in the upper half of the cup
+BREAKOUT_BUFFER_PCT   = 0.2 # close must clear the rim by this margin
+BREAKOUT_MAX_BARS     = 2   # the breakout cross must be fresh (within the last 1-2 bars)
+
 
 def send_telegram_message(message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -196,6 +212,73 @@ def largest_daily_swing(closes):
     return worst, best
 
 
+def detect_cup_and_handle(highs, lows, closes):
+    """Detect a FRESH cup-and-handle breakout ending at the latest bar.
+
+    A cup is a rounded dip: down from a rim, a rounded base, back up to ~the same rim.
+    A handle is a small shallow dip right after. The signal fires when today's close breaks
+    above the rim. Returns a dict (rim, bottom, depth, handle_low, breakout_level, target)
+    or None. Target = breakout + full cup depth (the measured move)."""
+    n = len(closes)
+    if n < CUP_MIN_BARS + HANDLE_MIN_BARS + 2:
+        return None
+    swing_highs, swing_lows = find_pivots(highs, lows, CUP_K, RIGHT_K)
+    if len(swing_highs) < 2 or len(swing_lows) < 1:
+        return None
+
+    # Search rim pairs, most-recent right rim first, for a valid cup whose handle+breakout is fresh.
+    for r_idx in range(len(swing_highs) - 1, 0, -1):
+        i_r, right = swing_highs[r_idx]
+        # the right rim must leave room for a handle + breakout near the end
+        if i_r > n - (HANDLE_MIN_BARS + 1) or i_r < n - (HANDLE_MAX_BARS + BREAKOUT_MAX_BARS + 1):
+            continue
+        for l_idx in range(r_idx - 1, -1, -1):
+            i_l, left = swing_highs[l_idx]
+            span = i_r - i_l
+            if span < CUP_MIN_BARS:
+                continue
+            if span > CUP_MAX_BARS:
+                break
+            if abs(right - left) / left * 100 > RIM_TOL_PCT:   # rims must be roughly level
+                continue
+            rim_level = max(left, right)
+            base = min(lows[i_l:i_r + 1])
+            bottom_idx = i_l + lows[i_l:i_r + 1].index(base)
+            depth = rim_level - base
+            depth_pct = depth / rim_level * 100
+            if not (CUP_MIN_DEPTH_PCT <= depth_pct <= CUP_MAX_DEPTH_PCT):
+                continue
+            # roundedness: bottom roughly central AND price dwells near the base (not a sharp V)
+            frac = (bottom_idx - i_l) / span
+            if not (BOTTOM_CENTER_LO <= frac <= BOTTOM_CENTER_HI):
+                continue
+            near_base = sum(1 for lo in lows[i_l:i_r + 1] if lo <= base + 0.20 * depth)
+            if near_base < ROUND_MIN_BARS:
+                continue
+            # handle: shallow dip after the right rim that stays in the upper half of the cup
+            seg = closes[i_r + 1:]
+            if len(seg) < HANDLE_MIN_BARS:
+                continue
+            handle_low = min(seg)
+            handle_depth = rim_level - handle_low
+            if handle_depth > HANDLE_MAX_DEPTH_FRAC * depth:
+                continue
+            if handle_low < base + 0.5 * depth:                # handle dipped too deep into the cup
+                continue
+            # fresh breakout: today closes above the rim, and it wasn't already above it before
+            level = rim_level * (1 + BREAKOUT_BUFFER_PCT / 100)
+            if closes[-1] <= level:
+                continue
+            prior = closes[max(i_r + 1, n - 1 - BREAKOUT_MAX_BARS):n - 1]
+            if prior and max(prior) > level:                   # already broken out earlier -> not fresh
+                continue
+            return {"rim": round(rim_level, 2), "bottom": round(base, 2),
+                    "depth": depth, "depth_pct": round(depth_pct, 1),
+                    "handle_low": round(handle_low, 2), "breakout_level": round(level, 2),
+                    "target": round(rim_level + depth, 2)}
+    return None
+
+
 def evaluate(highs, lows, closes, vols):
     if len(closes) < LEFT_K + RIGHT_K + 5:
         return None
@@ -235,13 +318,23 @@ def evaluate(highs, lows, closes, vols):
     worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
     erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
     fires = pulled_back and turning_up and volume_ok and not erratic and not in_macro_downtrend
+
+    # Cup-and-handle: a separate, standalone breakout signal (near the highs by construction,
+    # so the macro-downtrend guard doesn't apply; the erratic guard still does).
+    cup = detect_cup_and_handle(highs, lows, closes)
+    cup_fires = cup is not None and not erratic
+
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
                 fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
                 erratic=erratic, worst_swing=round(worst_swing, 1),
                 support=support, sup_slope=sup_slope,
-                in_macro_downtrend=in_macro_downtrend, high_6m=round(high_6m, 2))
+                in_macro_downtrend=in_macro_downtrend, high_6m=round(high_6m, 2),
+                cup_fires=cup_fires,
+                cup_target=cup["target"] if cup else None,
+                cup_depth=round(cup["depth"], 2) if cup else None,
+                cup_rim=cup["rim"] if cup else None)
 
 
 def get_ohlcv(data, sym):
@@ -406,8 +499,17 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     for h in hits:
         r = h["r"]
         lines.append("")
-        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
-                     f"target ${r['resistance']:.2f}")
+        # Cup-and-handle uses its measured-move target (breakout + cup depth); the bounce uses resistance.
+        if r.get("cup_fires"):
+            target = r.get("cup_target") or r["resistance"]
+            lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
+            setups = ["☕ Cup & Handle breakout"]
+            if r["fires"]:
+                setups.append("higher-low bounce")
+            lines.append(f"  📐 Setup: {' + '.join(setups)} (rim ${r.get('cup_rim'):.2f}, depth ${r.get('cup_depth'):.2f})")
+        else:
+            lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
+                         f"target ${r['resistance']:.2f}")
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
         xr = h.get("xray")
         if xr and xr.get("ok"):
@@ -486,7 +588,7 @@ def main():
                 pulled += 1
                 if not r["fires"]:
                     watchlist.append((sym, r["pct"]))
-            if r["fires"]:
+            if r["fires"] or r.get("cup_fires"):
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 
