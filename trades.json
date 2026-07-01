@@ -31,6 +31,16 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "JNJ",
+      "entry": 253.47,
+      "amount": 5069.4,
+      "shares": 20,
+      "date": "2026-07-01",
+      "setup": {
+        "rev_status": "unknown"
+      }
     }
   ],
   "closed": [
