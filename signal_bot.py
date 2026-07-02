@@ -100,6 +100,16 @@ HANDLE_MAX_DEPTH_FRAC = 0.5 # handle depth <= 50% of cup depth, AND its low stay
 BREAKOUT_BUFFER_PCT   = 0.2 # close must clear the rim by this margin
 BREAKOUT_MAX_BARS     = 2   # the breakout cross must be fresh (within the last 1-2 bars)
 
+# --- Flat-top breakout + breakout-retest dials (lessons from the TCBK/HOOD winners) ---
+FLAT_TOL_PCT      = 1.5   # swing highs within this % of each other count as the same ceiling
+FLAT_MIN_TOUCHES  = 3     # the ceiling must have been tested at least this many times
+FLAT_WINDOW       = 120   # look for the ceiling within the last ~6 months
+FLAT_MIN_AGE_BARS = 30    # the first touch must be at least this old (a real base, not one week)
+FLAT_MIN_HEIGHT   = 5.0   # consolidation depth below the ceiling, % of the level (floor)
+FLAT_MAX_HEIGHT   = 30.0  # deeper than this = not a tight base
+RETEST_MAX_BARS   = 15    # a breakout this recent can still yield a "second chance" retest entry
+RETEST_TOL_PCT    = 2.5   # the pullback must come within this % of the broken level (and hold it)
+
 
 def send_telegram_message(message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -213,6 +223,75 @@ def largest_daily_swing(closes):
     return worst, best
 
 
+def _breakout_kind(closes, lows, level, start):
+    """Classify how price broke above `level` after bar `start`.
+
+    Returns (kind, cross_idx):
+      "breakout" — the cross happened within the last BREAKOUT_MAX_BARS (fresh, enter now);
+      "retest"   — the cross is older (<= RETEST_MAX_BARS), price pulled back to within
+                   RETEST_TOL_PCT of the level, HELD it, and is turning up — a second-chance
+                   entry (the HOOD pattern: break rim, pull back, continue);
+      (None, None) — no valid entry."""
+    n = len(closes)
+    buffed = level * (1 + BREAKOUT_BUFFER_PCT / 100)
+    cross = next((i for i in range(start + 1, n) if closes[i] > buffed), None)
+    if cross is None:
+        return None, None
+    age = n - 1 - cross
+    if age <= BREAKOUT_MAX_BARS:
+        if closes[-1] > buffed:                      # still on the breakout today
+            return "breakout", cross
+        return None, None
+    if age <= RETEST_MAX_BARS:
+        after = closes[cross + 1:]
+        pulled_to_level = min(lows[cross + 1:]) <= level * (1 + RETEST_TOL_PCT / 100)
+        held_level = min(after) >= level * (1 - RETEST_TOL_PCT / 100)   # never collapsed back under
+        if pulled_to_level and held_level and closes[-1] > closes[-2] and closes[-1] > level:
+            return "retest", cross
+    return None, None
+
+
+def detect_flat_top(highs, lows, closes):
+    """Detect a flat-top breakout (the TCBK pattern): a horizontal ceiling tested several
+    times over months finally gives way. Returns a dict (level, touches, floor, height,
+    target, kind) or None. Target = level + height of the base (the measured move).
+    kind is "breakout" (fresh) or "retest" (broke earlier, pulled back and held)."""
+    n = len(closes)
+    if n < FLAT_MIN_AGE_BARS + LEFT_K:
+        return None
+    swing_highs, _ = find_pivots(highs, lows, LEFT_K, RIGHT_K)
+    recent = [(i, h) for i, h in swing_highs if i >= n - FLAT_WINDOW]
+    if len(recent) < FLAT_MIN_TOUCHES:
+        return None
+    # The ceiling is the highest CLUSTER of >= FLAT_MIN_TOUCHES swing highs within tolerance
+    # (not the single max — a post-breakout run-up high must not steal the level).
+    level, touches = None, []
+    for _, cand in sorted(recent, key=lambda t: t[1], reverse=True):
+        cluster = [(i, h) for i, h in recent if cand * (1 - FLAT_TOL_PCT / 100) <= h <= cand]
+        if len(cluster) >= FLAT_MIN_TOUCHES:
+            level, touches = cand, cluster
+            break
+    if level is None:
+        return None
+    first, last = touches[0][0], touches[-1][0]
+    if n - 1 - first < FLAT_MIN_AGE_BARS:            # the ceiling needs real history
+        return None
+    floor = min(lows[first:last + 1])
+    height = level - floor
+    height_pct = height / level * 100
+    if not (FLAT_MIN_HEIGHT <= height_pct <= FLAT_MAX_HEIGHT):
+        return None
+    # the ceiling must have actually capped price inside the base
+    buffed = level * (1 + BREAKOUT_BUFFER_PCT / 100)
+    if any(c > buffed for c in closes[first:last + 1]):
+        return None
+    kind, _cross = _breakout_kind(closes, lows, level, last)
+    if kind is None:
+        return None
+    return {"level": round(level, 2), "touches": len(touches), "floor": round(floor, 2),
+            "height": round(height, 2), "target": round(level + height, 2), "kind": kind}
+
+
 def detect_cup_and_handle(highs, lows, closes):
     """Detect a FRESH cup-and-handle breakout ending at the latest bar.
 
@@ -266,17 +345,15 @@ def detect_cup_and_handle(highs, lows, closes):
                 continue
             if handle_low < base + 0.5 * depth:                # handle dipped too deep into the cup
                 continue
-            # fresh breakout: today closes above the rim, and it wasn't already above it before
-            level = rim_level * (1 + BREAKOUT_BUFFER_PCT / 100)
-            if closes[-1] <= level:
-                continue
-            prior = closes[max(i_r + 1, n - 1 - BREAKOUT_MAX_BARS):n - 1]
-            if prior and max(prior) > level:                   # already broken out earlier -> not fresh
+            # entry: a fresh breakout above the rim, OR a successful retest of the broken rim
+            kind, _cross = _breakout_kind(closes, lows, rim_level, i_r)
+            if kind is None:
                 continue
             return {"rim": round(rim_level, 2), "bottom": round(base, 2),
                     "depth": depth, "depth_pct": round(depth_pct, 1),
-                    "handle_low": round(handle_low, 2), "breakout_level": round(level, 2),
-                    "target": round(rim_level + depth, 2)}
+                    "handle_low": round(handle_low, 2),
+                    "breakout_level": round(rim_level * (1 + BREAKOUT_BUFFER_PCT / 100), 2),
+                    "target": round(rim_level + depth, 2), "kind": kind}
     return None
 
 
@@ -327,6 +404,21 @@ def evaluate(highs, lows, closes, vols):
     cup = detect_cup_and_handle(highs, lows, closes)
     cup_fires = cup is not None and not erratic
 
+    # Flat-top breakout (the TCBK pattern): a multi-touch horizontal ceiling gives way.
+    # Flat tops sit near the highs, so both guards apply.
+    flat = detect_flat_top(highs, lows, closes)
+    flat_fires = flat is not None and not erratic and not in_macro_downtrend
+
+    # Golden cross (50-day SMA above 200-day): a regime confirmation tag, not a gate.
+    golden_cross = None
+    if len(closes) >= 210:
+        sma50 = sum(closes[-50:]) / 50
+        sma200 = sum(closes[-200:]) / 200
+        if sma50 > sma200:
+            past50 = sum(closes[-60:-10]) / 50           # the same SMAs ~10 bars ago
+            past200 = sum(closes[-210:-10]) / 200
+            golden_cross = "fresh" if past50 <= past200 else "active"
+
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
                 fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
@@ -337,7 +429,14 @@ def evaluate(highs, lows, closes, vols):
                 cup_fires=cup_fires,
                 cup_target=cup["target"] if cup else None,
                 cup_depth=round(cup["depth"], 2) if cup else None,
-                cup_rim=cup["rim"] if cup else None)
+                cup_rim=cup["rim"] if cup else None,
+                cup_kind=cup["kind"] if cup else None,
+                flat_fires=flat_fires,
+                flat_target=flat["target"] if flat else None,
+                flat_level=flat["level"] if flat else None,
+                flat_touches=flat["touches"] if flat else None,
+                flat_kind=flat["kind"] if flat else None,
+                golden_cross=golden_cross)
 
 
 def get_ohlcv(data, sym):
@@ -535,17 +634,22 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
     for h in hits:
         r = h["r"]
         lines.append("")
-        # Cup-and-handle uses its measured-move target (breakout + cup depth); the bounce uses resistance.
+        # Pattern targets are measured moves (level + base height); the bounce uses resistance.
+        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
+        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
+        setups = []
         if r.get("cup_fires"):
-            target = r.get("cup_target") or r["resistance"]
-            lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
-            setups = ["☕ Cup & Handle breakout"]
-            if r["fires"]:
-                setups.append("higher-low bounce")
-            lines.append(f"  📐 Setup: {' + '.join(setups)} (rim ${r.get('cup_rim'):.2f}, depth ${r.get('cup_depth'):.2f})")
-        else:
-            lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
-                         f"target ${r['resistance']:.2f}")
+            entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry 🔁"
+            setups.append(f"☕ Cup & Handle {entry} (rim ${r.get('cup_rim'):.2f}, depth ${r.get('cup_depth'):.2f})")
+        if r.get("flat_fires"):
+            entry = "breakout" if r.get("flat_kind") != "retest" else "retest entry 🔁"
+            setups.append(f"📏 Flat-top {entry} ({r.get('flat_touches')} touches at ${r.get('flat_level'):.2f})")
+        if r["fires"]:
+            setups.append("higher-low bounce")
+        if setups:
+            lines.append(f"  📐 Setup: {' + '.join(setups)}")
+        if r.get("golden_cross"):
+            lines.append(f"  ⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
         xr = h.get("xray")
         if xr and xr.get("ok"):
@@ -628,7 +732,7 @@ def main():
                     for cond in missing:
                         gate_fails[cond] = gate_fails.get(cond, 0) + 1
                     watchlist.append((sym, r["price"], missing))
-            if r["fires"] or r.get("cup_fires"):
+            if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 

@@ -137,5 +137,82 @@ class TestCupAndHandle(unittest.TestCase):
         self.assertIsNone(sb.detect_cup_and_handle(*_mk(lead + down + spike + up + handle + [101.0])[:3]))
 
 
+def _flat_base(level=100.0, floor=90.0, tail=("break",)):
+    """A flat-top base: ~3 ceiling touches at `level` over ~60 bars, floor at `floor`,
+    then a tail: 'break' (fresh close above), 'stall' (still under), or a retest sequence."""
+    cyc = []
+    for _ in range(3):                                   # three touches at the ceiling
+        cyc += [floor + (level - floor) * i / 9 for i in range(1, 10)] + [level]
+        cyc += [level - (level - floor) * i / 9 for i in range(1, 10)] + [floor]
+    closes = [95.0] * 12 + cyc                           # lead-in so pivots have left context
+    closes += [floor + (level - floor) * i / 9 for i in range(1, 9)]   # climb back toward the rim
+    if tail == ("break",):
+        closes += [level * 1.01]
+    elif tail == ("stall",):
+        closes += [level * 0.99]
+    else:
+        closes += list(tail)                              # custom post-rim bars (retest scenarios)
+    return _mk(closes)
+
+
+class TestFlatTopAndRetest(unittest.TestCase):
+    def test_flat_top_breakout_fires(self):
+        flat = sb.detect_flat_top(*_flat_base()[:3])
+        self.assertIsNotNone(flat)
+        self.assertEqual(flat["kind"], "breakout")
+        self.assertGreaterEqual(flat["touches"], 3)
+        self.assertAlmostEqual(flat["target"], flat["level"] + flat["height"], places=2)
+
+    def test_no_breakout_no_fire(self):
+        self.assertIsNone(sb.detect_flat_top(*_flat_base(tail=("stall",))[:3]))
+
+    def test_two_touches_not_enough(self):
+        # only 2 ceiling touches -> no flat top
+        cyc = []
+        for _ in range(2):
+            cyc += [90 + i for i in range(1, 10)] + [100]
+            cyc += [100 - i for i in range(1, 10)] + [90]
+        closes = [95.0] * 12 + cyc + [90 + i for i in range(1, 9)] + [101.0]
+        self.assertIsNone(sb.detect_flat_top(*_mk(closes)[:3]))
+
+    def test_retest_second_chance_fires(self):
+        # break out, run, pull back to the level, hold, turn up -> retest entry
+        tail = [101.0, 104.0, 106.0, 103.0, 101.5, 100.5, 102.5]
+        flat = sb.detect_flat_top(*_flat_base(tail=tuple(tail))[:3])
+        self.assertIsNotNone(flat)
+        self.assertEqual(flat["kind"], "retest")
+
+    def test_failed_breakout_no_retest(self):
+        # breaks out then collapses back UNDER the level -> failed breakout, no entry
+        tail = [101.0, 104.0, 99.0, 95.0, 94.0, 96.0, 97.0]
+        self.assertIsNone(sb.detect_flat_top(*_flat_base(tail=tuple(tail))[:3]))
+
+    def test_evaluate_reports_flat_fields(self):
+        r = sb.evaluate(*_flat_base())
+        self.assertTrue(r["flat_fires"])
+        self.assertEqual(r["flat_kind"], "breakout")
+        self.assertIsNotNone(r["flat_target"])
+
+
+class TestGoldenCross(unittest.TestCase):
+    def _series(self, first, then, n1=200, n2=30):
+        return [first] * n1 + [then] * n2
+
+    def test_fresh_cross(self):
+        # flat at 100 for 200 bars, then a jump to 130 for the last 30 -> 50d SMA just crossed the 200d
+        closes = self._series(100.0, 130.0)
+        highs = [c * 1.01 for c in closes]; lows = [c * 0.99 for c in closes]
+        r = sb.evaluate(highs, lows, closes, [1000] * len(closes))
+        if r is not None:
+            self.assertIn(r["golden_cross"], ("fresh", "active"))
+
+    def test_downtrend_no_cross(self):
+        closes = [130.0] * 200 + [95.0] * 30       # 50d SMA below 200d
+        highs = [c * 1.01 for c in closes]; lows = [c * 0.99 for c in closes]
+        r = sb.evaluate(highs, lows, closes, [1000] * len(closes))
+        if r is not None:
+            self.assertIsNone(r["golden_cross"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

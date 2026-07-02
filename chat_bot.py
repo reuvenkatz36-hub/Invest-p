@@ -202,11 +202,20 @@ def rule_report(sym, r, rev_status, rev_label, news):
              f"{chk(r['volume_ok'])} Bounce volume above average",
              f"{chk(not r.get('erratic'))} No wild single-day swings (past 2 years)",
              f"{rev_icon} {rev_label}"]
+    if r.get("golden_cross"):
+        lines.append(f"⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")
+    if r.get("cup_fires"):
+        entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry"
+        lines.append(f"☕ Cup & Handle {entry} — rim ${r.get('cup_rim'):.2f}, target ${r.get('cup_target'):.2f}")
+    if r.get("flat_fires"):
+        entry = "breakout" if r.get("flat_kind") != "retest" else "retest entry"
+        lines.append(f"📏 Flat-top {entry} — {r.get('flat_touches')} touches at ${r.get('flat_level'):.2f}, "
+                     f"target ${r.get('flat_target'):.2f}")
     if r.get("erratic"):
         verdict = (f"\U0001F534 AVOID — had a {r.get('worst_swing')}% single-day swing (up or down) in the "
-                   "past 2 years. Too erratic/inconsistent to trust, so the bot won't suggest it.")
-    elif r["fires"] and rev_status == "yes":
-        verdict = "\U0001F7E2 STRONG — matches the full buy setup."
+                   "past year. Too erratic/inconsistent to trust, so the bot won't suggest it.")
+    elif (r["fires"] or r.get("cup_fires") or r.get("flat_fires")) and rev_status == "yes":
+        verdict = "\U0001F7E2 STRONG — matches a full buy setup."
     elif r["pulled_back"]:
         verdict = "\U0001F7E1 WATCH — pulled back in an uptrend, waiting on the bounce + volume (and revenue)."
     elif r["is_uptrend"]:
@@ -214,8 +223,9 @@ def rule_report(sym, r, rev_status, rev_label, news):
     else:
         verdict = "\U0001F534 Not an uptrend setup right now."
     lines += ["", verdict]
-    if r["fires"]:
-        lines.append(f"Entry ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${r['resistance']:.2f}")
+    if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
+        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
+        lines.append(f"Entry ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
     if news:
         lines.append("\nNews:")
         lines += [f"• {n}" for n in news[:3]]
@@ -506,6 +516,7 @@ COMMANDS = [
     ("watchlist",  "Show your watchlist",                        ""),
     ("scan",       "Scan watchlist + positions for buy setups",  ""),
     ("daily",      "Run the full daily market scan now",         ""),
+    ("morning",    "News scan: today's catalysts vs the strategy", ""),
     ("strategy",   "Explain the trading strategy",               ""),
 ]
 
@@ -689,12 +700,12 @@ def handle_scan(trades):
     return "\n".join(lines)
 
 
-def trigger_daily_scan():
-    """Launch the full daily market-scan workflow (signal_bot) via the GitHub API,
-    so it runs as its own job and posts results here when done. Returns (ok, error)."""
+def trigger_daily_scan(wf=None):
+    """Launch a scan workflow (daily signal_bot by default, or e.g. premarket.yml) via the
+    GitHub API, so it runs as its own job and posts results here when done. Returns (ok, error)."""
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     repo = os.environ.get("GITHUB_REPOSITORY")
-    wf = os.environ.get("DAILY_WORKFLOW", "main.yml")
+    wf = wf or os.environ.get("DAILY_WORKFLOW", "main.yml")
     if not token or not repo:
         return False, "the on-demand scan isn't configured (no GitHub token in this environment)."
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/dispatches"
@@ -717,6 +728,15 @@ def handle_daily():
         return ("\U0001F501 Started the full daily market scan. It runs in the background and takes "
                 "a few minutes — the results will arrive here as a separate message when it's done.")
     return f"Couldn't start the daily scan: {err}"
+
+
+def handle_morning():
+    ok, err = trigger_daily_scan(os.environ.get("MORNING_WORKFLOW", "premarket.yml"))
+    if ok:
+        return ("\U0001F305 Started the morning news scan. It reads today's headlines, picks the "
+                "stocks with real catalysts, checks them against the strategy + health score, and "
+                "posts the brief here in a few minutes.")
+    return f"Couldn't start the morning news scan: {err}"
 
 
 def handle_capital(arg, trades):
@@ -788,6 +808,8 @@ def handle_command(cmd, arg, trades):
         return handle_scan(trades)
     if cmd in ("daily", "today", "dailyscan", "marketscan", "fullscan"):
         return handle_daily()
+    if cmd in ("morning", "premarket", "newsscan", "morningscan"):
+        return handle_morning()
     if cmd in ("xray", "x-ray", "rentgen", "fundamentals", "deep"):
         if not sym:
             return "Usage: /xray AAPL"
@@ -851,6 +873,8 @@ def handle_message(text, trades):
         sym = extract_ticker(low.replace("xray", " ").replace("x-ray", " ").replace("fundamentals", " "))
         if sym:
             return xray.xray_text(sym) or f"Couldn't pull enough fundamental data on {sym}."
+    if "morning scan" in low or "news scan" in low or "premarket" in low:
+        return handle_morning()
     if "daily" in low or "market scan" in low or "scan the market" in low or "full scan" in low:
         return handle_daily()
     if has("scan"):

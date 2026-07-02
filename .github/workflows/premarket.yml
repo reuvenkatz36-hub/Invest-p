@@ -1,0 +1,39 @@
+name: Morning News Scan
+
+# 13:00 UTC = 09:00 ET and 14:00 UTC = 10:00 ET during US daylight saving (EDT) —
+# i.e. 30 min before and 30 min after the 09:30 ET open. In winter (EST) these fire
+# at 08:00/09:00 ET; GitHub cron can't track DST, so we accept the one-hour drift
+# (same approach as dashboard.yml).
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: morning-news-scan
+  cancel-in-progress: false
+
+jobs:
+  run-news-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install yfinance requests anthropic
+
+      - name: Run morning news scan
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CHAT_MODEL: "claude-sonnet-4-6"
+        run: python news_scan.py
