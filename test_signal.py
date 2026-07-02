@@ -41,6 +41,50 @@ class TestSwingGuard(unittest.TestCase):
             self.assertFalse(r["fires"])
 
 
+class TestSharperGates(unittest.TestCase):
+    def _uptrend(self, n=300):
+        # staircase uptrend with real pullbacks so swing highs AND lows form:
+        # 15 bars up ~1%, then 6 bars down ~1.2% (net rising)
+        closes, v = [], 50.0
+        for i in range(n):
+            v = v * (1.010 if i % 21 < 15 else 0.988)
+            closes.append(v)
+        return closes
+
+    def test_old_crash_no_longer_erratic(self):
+        # a -25% day ~290 bars ago is OUTSIDE the 252-bar window -> not erratic anymore
+        closes = self._uptrend(300)
+        closes[10] = closes[9] * 0.75
+        highs = [c * 1.01 for c in closes]; lows = [c * 0.99 for c in closes]
+        r = sb.evaluate(highs, lows, closes, [1000] * 300)
+        self.assertFalse(r["erratic"])
+
+    def test_recent_crash_still_erratic(self):
+        closes = self._uptrend(300)
+        closes[-30] = closes[-31] * 0.75          # same crash inside the last year
+        highs = [c * 1.01 for c in closes]; lows = [c * 0.99 for c in closes]
+        r = sb.evaluate(highs, lows, closes, [1000] * 300)
+        self.assertTrue(r["erratic"])
+        self.assertFalse(r["fires"])
+
+    def test_volume_spike_yesterday_counts(self):
+        closes = self._uptrend(120)
+        highs = [c * 1.01 for c in closes]; lows = [c * 0.99 for c in closes]
+        vols = [1000] * 120
+        vols[-2] = 2500                            # the bounce's volume day was yesterday
+        r = sb.evaluate(highs, lows, closes, vols)
+        self.assertTrue(r["volume_ok"])
+        vols[-2] = 1000                            # neither of the last 2 bars beats the average
+        r = sb.evaluate(highs, lows, closes, vols)
+        self.assertFalse(r["volume_ok"])
+
+    def test_gate_misses_names_the_failures(self):
+        r = {"turning_up": False, "volume_ok": True, "erratic": False, "in_macro_downtrend": True}
+        self.assertEqual(sb.gate_misses(r), ["not turning up", "macro downtrend"])
+        r_ok = {"turning_up": True, "volume_ok": True, "erratic": False, "in_macro_downtrend": False}
+        self.assertEqual(sb.gate_misses(r_ok), [])
+
+
 def _mk(closes):
     """Wrap a close series into (highs, lows, closes, vols) with tight intrabar range."""
     highs = [c * 1.005 for c in closes]

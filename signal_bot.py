@@ -25,7 +25,8 @@ NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 # --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
 REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
                                    # (drops both declining and unverifiable 'n/a' names)
-MIN_SCORE = int(os.environ.get("MIN_SCORE", "9"))   # only suggest stocks with a health score >= this
+MIN_SCORE = int(os.environ.get("MIN_SCORE", "8"))   # only suggest stocks with a health score >= this
+ERRATIC_WINDOW = 252   # judge "erratic" on the last ~12 months only (an old earnings gap shouldn't blacklist forever)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
 # Fallback universe (curated large caps) used only if the live screener fetch
@@ -73,9 +74,9 @@ FALLBACK_SYMBOLS = [
 # --- Strategy dials (tune any of these, one number at a time) ---
 LEFT_K = 10            # swing significance (lookback window before a pivot)
 RIGHT_K = 1            # bars required after a low to confirm it (1 = react fast to fresh bounces)
-ENTRY_MIN_PCT = 3.0    # price must be 3-8% above the recent higher low
-ENTRY_MAX_PCT = 8.0
-NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tight pullback)
+ENTRY_MIN_PCT = 2.5    # price must be 2.5-10% above the recent higher low
+ENTRY_MAX_PCT = 10.0
+NEAR_SUPPORT_PCT = 8.0 # price must be within this % above the support line (tight pullback)
 RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not a stale one)
 VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
@@ -307,14 +308,16 @@ def evaluate(highs, lows, closes, vols):
     pct = (price - low_last[1]) / low_last[1] * 100
     in_zone = ENTRY_MIN_PCT <= pct <= ENTRY_MAX_PCT
     turning_up = closes[-1] > closes[-2]
-    prior = vols[-21:-1]                                             # prior up-to-20 days, excludes today
+    prior = vols[-22:-2]                                             # prior up-to-20 days, excludes the last 2
     prev_avg_vol = sum(prior) / len(prior) if prior else 0          # divide by what we actually have
-    volume_ok = prev_avg_vol > 0 and vols[-1] > VOL_MULT * prev_avg_vol  # volume confirmation
+    # Volume confirmation on EITHER of the last 2 bars: the bounce's volume day is often the day
+    # before our close check, and an intraday /daily run leaves the final bar's volume partial.
+    volume_ok = prev_avg_vol > 0 and any(v > VOL_MULT * prev_avg_vol for v in vols[-2:])
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
-    # Stability guard: reject erratic names that had a violent single-day move (up OR down) over the
-    # lookback (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
-    worst_drop, biggest_jump = largest_daily_swing(closes)
+    # Stability guard: reject erratic names that had a violent single-day move (up OR down) within
+    # the last ~year (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
+    worst_drop, biggest_jump = largest_daily_swing(closes[-ERRATIC_WINDOW:])
     worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
     erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
     fires = pulled_back and turning_up and volume_ok and not erratic and not in_macro_downtrend
@@ -456,17 +459,20 @@ def news_link(sym):
 def enrich_hits(hits):
     """For each chart-screen hit, add YoY revenue + the X-ray score, and only KEEP names whose
     fundamental health score is >= MIN_SCORE. The cheap rule score is computed first so we don't
-    waste an AI call on names that won't make the cut. Returns a list of dicts."""
+    waste an AI call on names that won't make the cut. Returns (list of dicts, drop-reason tally)."""
     enriched = []
+    drops = {"revenue": 0, "health_score": 0}
     for sym, r in hits:
         status, rev_label = revenue_growth(sym)
         if REQUIRE_CONFIRMED_GROWTH and status != "yes":
             reason = "declining" if status == "no" else "growth unverifiable"
             print(f"  drop {sym}: {rev_label} ({reason})")
+            drops["revenue"] += 1
             continue
         xr = xray.xray(sym, ai=False)                       # cheap rule-based score first
         if not xr.get("ok") or (xr.get("score") or 0) < MIN_SCORE:
             print(f"  drop {sym}: health score {xr.get('score') if xr.get('ok') else 'n/a'} < {MIN_SCORE}")
+            drops["health_score"] += 1
             continue
         try:                                                # passed the gate -> add the Sonnet verdict
             xray._ai_layer(sym, xr, web=os.environ.get("XRAY_WEB") == "1")
@@ -475,10 +481,25 @@ def enrich_hits(hits):
         news = fetch_news(sym)
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
         time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
-    return enriched
+    return enriched, drops
 
 
-def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
+def gate_misses(r):
+    """Which of the final chart conditions a pulled-back stock is missing (empty = it fires)."""
+    missing = []
+    if not r["turning_up"]:
+        missing.append("not turning up")
+    if not r["volume_ok"]:
+        missing.append("volume below average")
+    if r["erratic"]:
+        missing.append("erratic swings")
+    if r["in_macro_downtrend"]:
+        missing.append("macro downtrend")
+    return missing
+
+
+def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
+                  gate_fails=None, near_misses=None, drops=None):
     if scanned == 0:
         return (f"⚠️ Stock bot: scan FAILED — 0 of {universe_n} symbols "
                 f"returned data (likely rate-limited or a network error). No reliable "
@@ -491,6 +512,21 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     if not hits:
         lines.append(f"\nNo buy setups today that clear the bar (uptrend + higher-low bounce on volume + "
                      f"growing revenue + health score ≥ {MIN_SCORE}/10, not erratic).")
+        # Explain WHERE the funnel choked, so quiet days aren't a black box.
+        if gate_fails and sum(gate_fails.values()):
+            parts = [f"{n} {label}" for label, n in gate_fails.items() if n]
+            lines.append(f"\nWhy: of the {pulled} pulled back — " + ", ".join(parts) + ".")
+        if drops and sum(drops.values()):
+            parts = []
+            if drops.get("revenue"):
+                parts.append(f"{drops['revenue']} lacked confirmed revenue growth")
+            if drops.get("health_score"):
+                parts.append(f"{drops['health_score']} scored below {MIN_SCORE}/10")
+            lines.append("Chart setups dropped at the fundamentals gate: " + "; ".join(parts) + ".")
+        if near_misses:
+            lines.append("\n\U0001F440 Nearly there (one condition missing):")
+            for sym, price, cond in near_misses[:5]:
+                lines.append(f"• {sym} ${price:.2f} — waiting on: {cond}")
         return "\n".join(lines)
 
     lines.append("")
@@ -566,7 +602,8 @@ def main():
           f"{' [fallback list]' if used_fallback else ''}...")
     scanned = uptrends = pulled = 0
     hits = []
-    watchlist = []
+    watchlist = []           # (sym, price, [missing conditions]) for pulled-back names that didn't fire
+    gate_fails = {}          # tally of which final condition killed each pulled-back candidate
 
     for i in range(0, len(symbols), CHUNK):
         chunk = symbols[i:i + CHUNK]
@@ -587,16 +624,22 @@ def main():
             if r["pulled_back"]:
                 pulled += 1
                 if not r["fires"]:
-                    watchlist.append((sym, r["pct"]))
+                    missing = gate_misses(r)
+                    for cond in missing:
+                        gate_fails[cond] = gate_fails.get(cond, 0) + 1
+                    watchlist.append((sym, r["price"], missing))
             if r["fires"] or r.get("cup_fires"):
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 
     print(f"\nFUNNEL: scanned {scanned} | uptrends {uptrends} | pulled back {pulled} | "
           f"chart setups {len(hits)}")
+    if gate_fails:
+        print("  final-gate failures among pulled-back: " +
+              ", ".join(f"{label}: {n}" for label, n in gate_fails.items()))
 
     # Fundamental gate (YoY revenue) + news, only for the handful of chart hits.
-    enriched = enrich_hits(hits)
+    enriched, drops = enrich_hits(hits)
 
     if enriched:
         print(f"\nBUY setups after revenue gate ({len(enriched)}):")
@@ -604,12 +647,15 @@ def main():
             r = h["r"]
             print(f"  BUY {h['sym']}: ${r['price']:.2f}  stop ${r['stop']:.2f}  "
                   f"target ${r['resistance']:.2f}  [{h['rev_label']}]")
+    # Near misses: pulled-back names missing exactly ONE condition (closest to firing).
+    near_misses = [(sym, price, missing[0]) for sym, price, missing in watchlist if len(missing) == 1]
     if watchlist:
         print("\nWatchlist (pulled back, awaiting confirmation):")
-        for sym, pct in watchlist[:10]:
-            print(f"  {sym}: {pct:.1f}% off low")
+        for sym, price, missing in watchlist[:10]:
+            print(f"  {sym} ${price:.2f}: missing {', '.join(missing) or '?'}")
 
-    summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback)
+    summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback,
+                            gate_fails=gate_fails, near_misses=near_misses, drops=drops)
     sent = send_long(summary)
     if sent:
         print(f"\nSummary sent in {sent} message(s).")
