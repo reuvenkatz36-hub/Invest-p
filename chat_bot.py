@@ -54,7 +54,8 @@ STOPWORDS = {"BUY", "BOUGHT", "BOT", "SELL", "SOLD", "AT", "FOR", "THE", "OF", "
              "NEWS", "HEADLINES", "PRICE", "QUOTE", "EARNINGS", "STATS", "SUMMARY", "SCAN", "WATCH",
              "WATCHLIST", "UNWATCH", "STRATEGY", "RULES", "REMOVE", "DELETE", "FORGET", "PORTFOLIO",
              "HOLDINGS", "MENU", "COMMANDS", "START", "TODAY", "NOW", "DAILY", "MARKET", "FULL",
-             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN", "DASHBOARD", "WEBSITE", "SITE", "GRAPH", "CAPITAL"}
+             "XRAY", "FUNDAMENTALS", "DEEP", "RENTGEN", "DASHBOARD", "WEBSITE", "SITE", "GRAPH", "CAPITAL",
+             "FORCE"}
 
 # The bot's "memory": red flags it looks for in your OWN losing trades, so it can warn
 # you when a new candidate repeats the same mistake. Each entry is
@@ -201,11 +202,20 @@ def rule_report(sym, r, rev_status, rev_label, news):
              f"{chk(r['volume_ok'])} Bounce volume above average",
              f"{chk(not r.get('erratic'))} No wild single-day swings (past 2 years)",
              f"{rev_icon} {rev_label}"]
+    if r.get("golden_cross"):
+        lines.append(f"⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")
+    if r.get("cup_fires"):
+        entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry"
+        lines.append(f"☕ Cup & Handle {entry} — rim ${r.get('cup_rim'):.2f}, target ${r.get('cup_target'):.2f}")
+    if r.get("flat_fires"):
+        entry = "breakout" if r.get("flat_kind") != "retest" else "retest entry"
+        lines.append(f"📏 Flat-top {entry} — {r.get('flat_touches')} touches at ${r.get('flat_level'):.2f}, "
+                     f"target ${r.get('flat_target'):.2f}")
     if r.get("erratic"):
         verdict = (f"\U0001F534 AVOID — had a {r.get('worst_swing')}% single-day swing (up or down) in the "
-                   "past 2 years. Too erratic/inconsistent to trust, so the bot won't suggest it.")
-    elif r["fires"] and rev_status == "yes":
-        verdict = "\U0001F7E2 STRONG — matches the full buy setup."
+                   "past year. Too erratic/inconsistent to trust, so the bot won't suggest it.")
+    elif (r["fires"] or r.get("cup_fires") or r.get("flat_fires")) and rev_status == "yes":
+        verdict = "\U0001F7E2 STRONG — matches a full buy setup."
     elif r["pulled_back"]:
         verdict = "\U0001F7E1 WATCH — pulled back in an uptrend, waiting on the bounce + volume (and revenue)."
     elif r["is_uptrend"]:
@@ -213,8 +223,9 @@ def rule_report(sym, r, rev_status, rev_label, news):
     else:
         verdict = "\U0001F534 Not an uptrend setup right now."
     lines += ["", verdict]
-    if r["fires"]:
-        lines.append(f"Entry ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${r['resistance']:.2f}")
+    if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
+        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
+        lines.append(f"Entry ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
     if news:
         lines.append("\nNews:")
         lines += [f"• {n}" for n in news[:3]]
@@ -336,7 +347,7 @@ def parse_trade(text):
 
 
 # ---------- handlers ----------
-def handle_buy(sym, price, amount, shares, trades):
+def handle_buy(sym, price, amount, shares, trades, force=False):
     # Don't double-log: if an identical open position already exists (same symbol, entry
     # and share count), treat a repeat as a no-op instead of creating a duplicate.
     for p in trades.get("open", []):
@@ -344,13 +355,34 @@ def handle_buy(sym, price, amount, shares, trades):
             return (f"ℹ️ You already have an open {sym} position at ${price:.2f} on record — "
                     "I didn't add a duplicate. Send 'positions' to see your holdings.")
     r, rev_status, rev_label, _ = analyze_symbol(sym)
+
+    # --- Hard revenue-growth gate ---
+    # Every one of your past losses was bought without confirmed YoY revenue growth, so
+    # a trade whose revenue isn't confirmed growing is BLOCKED by default. Resend with the
+    # word "force" to log it anyway (it's then tagged as off-strategy).
+    if rev_status != "yes" and not force:
+        reason = ("revenue is DECLINING" if rev_status == "no"
+                  else "revenue growth is UNCONFIRMED")
+        qty = f"{shares} " if shares else ""
+        return (f"⛔ NOT recorded — {reason} for {sym} ({rev_label}).\n\n"
+                "Confirming year-over-year revenue growth is a hard rule: every single one of "
+                "your past losses was bought without it. This is the one filter that would have "
+                "flagged all of them.\n\n"
+                "If you've done the homework and still want to log it, resend:\n"
+                f"  buy {qty}{sym} at {price:g} force\n"
+                "(the word 'force' records it, flagged as off-strategy).")
+
     if amount is None and shares is not None:   # derive $ size from shares × price
         amount = round(shares * price, 2)
-    trades.setdefault("open", []).append({
+    pos = {
         "sym": sym, "entry": price, "amount": amount, "shares": shares,
         "date": datetime.date.today().isoformat(),
         "setup": setup_snapshot(r, rev_status),
-    })
+    }
+    off_strategy = rev_status != "yes"   # only reachable here when force=True
+    if off_strategy:
+        pos["off_strategy"] = "unconfirmed_revenue"
+    trades.setdefault("open", []).append(pos)
     size = []
     if shares:
         size.append(f"{shares} sh")
@@ -358,7 +390,10 @@ def handle_buy(sym, price, amount, shares, trades):
         size.append(f"${amount:.0f}")
     extra = f" ({', '.join(size)})" if size else ""
     note = ""
-    if r is not None and not r["fires"]:
+    if off_strategy:
+        note = ("\n⚠️ Logged OFF-STRATEGY: revenue growth isn't confirmed "
+                f"({rev_label}) — the exact pattern behind your past losses.")
+    elif r is not None and not r["fires"]:
         note = "\n⚠️ Heads up: this isn't a full buy signal on our strategy right now."
     note += memory_block(sym, r, rev_status, trades)   # remind you of similar past losses
     return f"\U0001F4DD Recorded BUY {sym} @ ${price:.2f}{extra}. Good luck!{note}"
@@ -481,6 +516,7 @@ COMMANDS = [
     ("watchlist",  "Show your watchlist",                        ""),
     ("scan",       "Scan watchlist + positions for buy setups",  ""),
     ("daily",      "Run the full daily market scan now",         ""),
+    ("morning",    "News scan: today's catalysts vs the strategy", ""),
     ("strategy",   "Explain the trading strategy",               ""),
 ]
 
@@ -664,12 +700,12 @@ def handle_scan(trades):
     return "\n".join(lines)
 
 
-def trigger_daily_scan():
-    """Launch the full daily market-scan workflow (signal_bot) via the GitHub API,
-    so it runs as its own job and posts results here when done. Returns (ok, error)."""
+def trigger_daily_scan(wf=None):
+    """Launch a scan workflow (daily signal_bot by default, or e.g. premarket.yml) via the
+    GitHub API, so it runs as its own job and posts results here when done. Returns (ok, error)."""
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     repo = os.environ.get("GITHUB_REPOSITORY")
-    wf = os.environ.get("DAILY_WORKFLOW", "main.yml")
+    wf = wf or os.environ.get("DAILY_WORKFLOW", "main.yml")
     if not token or not repo:
         return False, "the on-demand scan isn't configured (no GitHub token in this environment)."
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/dispatches"
@@ -692,6 +728,15 @@ def handle_daily():
         return ("\U0001F501 Started the full daily market scan. It runs in the background and takes "
                 "a few minutes — the results will arrive here as a separate message when it's done.")
     return f"Couldn't start the daily scan: {err}"
+
+
+def handle_morning():
+    ok, err = trigger_daily_scan(os.environ.get("MORNING_WORKFLOW", "premarket.yml"))
+    if ok:
+        return ("\U0001F305 Started the morning news scan. It reads today's headlines, picks the "
+                "stocks with real catalysts, checks them against the strategy + health score, and "
+                "posts the brief here in a few minutes.")
+    return f"Couldn't start the morning news scan: {err}"
 
 
 def handle_capital(arg, trades):
@@ -734,7 +779,8 @@ def handle_command(cmd, arg, trades):
         return handle_earnings(sym) if sym else "Usage: /earnings NVDA"
     if cmd in ("buy", "bought"):
         t = parse_trade("bought " + arg)
-        return apply_trade(t, trades) if t else "Usage: /buy 10 NVDA at 240"
+        force = re.search(r"\bforce\b", arg, re.I) is not None
+        return apply_trade(t, trades, force=force) if t else "Usage: /buy 10 NVDA at 240"
     if cmd in ("sell", "sold"):
         t = parse_trade("sold " + arg)
         return apply_trade(t, trades) if t else "Usage: /sell NVDA at 255"
@@ -762,6 +808,8 @@ def handle_command(cmd, arg, trades):
         return handle_scan(trades)
     if cmd in ("daily", "today", "dailyscan", "marketscan", "fullscan"):
         return handle_daily()
+    if cmd in ("morning", "premarket", "newsscan", "morningscan"):
+        return handle_morning()
     if cmd in ("xray", "x-ray", "rentgen", "fundamentals", "deep"):
         if not sym:
             return "Usage: /xray AAPL"
@@ -781,11 +829,11 @@ def set_my_commands():
         print(f"setMyCommands failed: {e}")
 
 
-def apply_trade(trade, trades):
+def apply_trade(trade, trades, force=False):
     action, sym, price, amount, shares = trade
     if action == "sell":
         return handle_sell(sym, price, trades)
-    return handle_buy(sym, price, amount, shares, trades)
+    return handle_buy(sym, price, amount, shares, trades, force=force)
 
 
 def handle_message(text, trades):
@@ -807,12 +855,12 @@ def handle_message(text, trades):
     # A single message can hold several trades on separate lines ("bought X\nalso bought Y") —
     # handle each so none get silently dropped.
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    parsed = [parse_trade(ln) for ln in lines]
-    if sum(1 for p in parsed if p) >= 2:
-        return "\n".join(apply_trade(p, trades) for p in parsed if p)
+    parsed = [(parse_trade(ln), re.search(r"\bforce\b", ln, re.I) is not None) for ln in lines]
+    if sum(1 for p, _ in parsed if p) >= 2:
+        return "\n".join(apply_trade(p, trades, force=f) for p, f in parsed if p)
     trade = parse_trade(text)
     if trade:
-        return apply_trade(trade, trades)
+        return apply_trade(trade, trades, force=re.search(r"\bforce\b", text, re.I) is not None)
     if has("positions", "position", "portfolio", "holdings", "holding"):
         return handle_positions(trades)
     if has("history") or "my trades" in low or "track record" in low or "closed trades" in low:
@@ -825,6 +873,8 @@ def handle_message(text, trades):
         sym = extract_ticker(low.replace("xray", " ").replace("x-ray", " ").replace("fundamentals", " "))
         if sym:
             return xray.xray_text(sym) or f"Couldn't pull enough fundamental data on {sym}."
+    if "morning scan" in low or "news scan" in low or "premarket" in low:
+        return handle_morning()
     if "daily" in low or "market scan" in low or "scan the market" in low or "full scan" in low:
         return handle_daily()
     if has("scan"):

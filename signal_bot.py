@@ -25,7 +25,8 @@ NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 # --- Fundamental gate + news (only applied to stocks that pass the chart screen) ---
 REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
                                    # (drops both declining and unverifiable 'n/a' names)
-MIN_SCORE = int(os.environ.get("MIN_SCORE", "9"))   # only suggest stocks with a health score >= this
+MIN_SCORE = int(os.environ.get("MIN_SCORE", "8"))   # only suggest stocks with a health score >= this
+ERRATIC_WINDOW = 252   # judge "erratic" on the last ~12 months only (an old earnings gap shouldn't blacklist forever)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
 # Fallback universe (curated large caps) used only if the live screener fetch
@@ -73,15 +74,41 @@ FALLBACK_SYMBOLS = [
 # --- Strategy dials (tune any of these, one number at a time) ---
 LEFT_K = 10            # swing significance (lookback window before a pivot)
 RIGHT_K = 1            # bars required after a low to confirm it (1 = react fast to fresh bounces)
-ENTRY_MIN_PCT = 3.0    # price must be 3-8% above the recent higher low
-ENTRY_MAX_PCT = 8.0
-NEAR_SUPPORT_PCT = 6.0 # price must be within this % above the support line (tight pullback)
+ENTRY_MIN_PCT = 2.5    # price must be 2.5-10% above the recent higher low
+ENTRY_MAX_PCT = 10.0
+NEAR_SUPPORT_PCT = 8.0 # price must be within this % above the support line (tight pullback)
 RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not a stale one)
 VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
 MAX_SWING_PCT = 15.0   # reject a stock if ANY single day (up OR down) moved this % or more — too erratic
 CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
+
+# --- Cup-and-Handle detector dials (a separate, standalone breakout signal) ---
+CUP_K              = 15     # pivot significance for the cup's rims/bottom (bigger swings than LEFT_K)
+CUP_MIN_BARS       = 25     # rim-to-rim span: minimum
+CUP_MAX_BARS       = 250    # rim-to-rim span: maximum (~1 trading year)
+CUP_MIN_DEPTH_PCT  = 12.0   # cup depth (rim-bottom) as % of rim: floor (shallower = noise)
+CUP_MAX_DEPTH_PCT  = 50.0   # ceiling (deeper = a crash, not a cup)
+RIM_TOL_PCT        = 6.0    # right rim must be within this % of the left rim (roughly level)
+BOTTOM_CENTER_LO   = 0.30   # bottom must sit in the central 30-70% of the span (rounded, not a late V)
+BOTTOM_CENTER_HI   = 0.70
+ROUND_MIN_BARS     = 5      # >=5 bars within the bottom 20% of depth => rounded base, not a single-spike V
+HANDLE_MIN_BARS    = 3
+HANDLE_MAX_BARS    = 40     # handle must form within this many bars after the right rim
+HANDLE_MAX_DEPTH_FRAC = 0.5 # handle depth <= 50% of cup depth, AND its low stays in the upper half of the cup
+BREAKOUT_BUFFER_PCT   = 0.2 # close must clear the rim by this margin
+BREAKOUT_MAX_BARS     = 2   # the breakout cross must be fresh (within the last 1-2 bars)
+
+# --- Flat-top breakout + breakout-retest dials (lessons from the TCBK/HOOD winners) ---
+FLAT_TOL_PCT      = 1.5   # swing highs within this % of each other count as the same ceiling
+FLAT_MIN_TOUCHES  = 3     # the ceiling must have been tested at least this many times
+FLAT_WINDOW       = 120   # look for the ceiling within the last ~6 months
+FLAT_MIN_AGE_BARS = 30    # the first touch must be at least this old (a real base, not one week)
+FLAT_MIN_HEIGHT   = 5.0   # consolidation depth below the ceiling, % of the level (floor)
+FLAT_MAX_HEIGHT   = 30.0  # deeper than this = not a tight base
+RETEST_MAX_BARS   = 15    # a breakout this recent can still yield a "second chance" retest entry
+RETEST_TOL_PCT    = 2.5   # the pullback must come within this % of the broken level (and hold it)
 
 
 def send_telegram_message(message: str) -> bool:
@@ -196,10 +223,151 @@ def largest_daily_swing(closes):
     return worst, best
 
 
+def _breakout_kind(closes, lows, level, start):
+    """Classify how price broke above `level` after bar `start`.
+
+    Returns (kind, cross_idx):
+      "breakout" — the cross happened within the last BREAKOUT_MAX_BARS (fresh, enter now);
+      "retest"   — the cross is older (<= RETEST_MAX_BARS), price pulled back to within
+                   RETEST_TOL_PCT of the level, HELD it, and is turning up — a second-chance
+                   entry (the HOOD pattern: break rim, pull back, continue);
+      (None, None) — no valid entry."""
+    n = len(closes)
+    buffed = level * (1 + BREAKOUT_BUFFER_PCT / 100)
+    cross = next((i for i in range(start + 1, n) if closes[i] > buffed), None)
+    if cross is None:
+        return None, None
+    age = n - 1 - cross
+    if age <= BREAKOUT_MAX_BARS:
+        if closes[-1] > buffed:                      # still on the breakout today
+            return "breakout", cross
+        return None, None
+    if age <= RETEST_MAX_BARS:
+        after = closes[cross + 1:]
+        pulled_to_level = min(lows[cross + 1:]) <= level * (1 + RETEST_TOL_PCT / 100)
+        held_level = min(after) >= level * (1 - RETEST_TOL_PCT / 100)   # never collapsed back under
+        if pulled_to_level and held_level and closes[-1] > closes[-2] and closes[-1] > level:
+            return "retest", cross
+    return None, None
+
+
+def detect_flat_top(highs, lows, closes):
+    """Detect a flat-top breakout (the TCBK pattern): a horizontal ceiling tested several
+    times over months finally gives way. Returns a dict (level, touches, floor, height,
+    target, kind) or None. Target = level + height of the base (the measured move).
+    kind is "breakout" (fresh) or "retest" (broke earlier, pulled back and held)."""
+    n = len(closes)
+    if n < FLAT_MIN_AGE_BARS + LEFT_K:
+        return None
+    swing_highs, _ = find_pivots(highs, lows, LEFT_K, RIGHT_K)
+    recent = [(i, h) for i, h in swing_highs if i >= n - FLAT_WINDOW]
+    if len(recent) < FLAT_MIN_TOUCHES:
+        return None
+    # The ceiling is the highest CLUSTER of >= FLAT_MIN_TOUCHES swing highs within tolerance
+    # (not the single max — a post-breakout run-up high must not steal the level).
+    level, touches = None, []
+    for _, cand in sorted(recent, key=lambda t: t[1], reverse=True):
+        cluster = [(i, h) for i, h in recent if cand * (1 - FLAT_TOL_PCT / 100) <= h <= cand]
+        if len(cluster) >= FLAT_MIN_TOUCHES:
+            level, touches = cand, cluster
+            break
+    if level is None:
+        return None
+    first, last = touches[0][0], touches[-1][0]
+    if n - 1 - first < FLAT_MIN_AGE_BARS:            # the ceiling needs real history
+        return None
+    floor = min(lows[first:last + 1])
+    height = level - floor
+    height_pct = height / level * 100
+    if not (FLAT_MIN_HEIGHT <= height_pct <= FLAT_MAX_HEIGHT):
+        return None
+    # the ceiling must have actually capped price inside the base
+    buffed = level * (1 + BREAKOUT_BUFFER_PCT / 100)
+    if any(c > buffed for c in closes[first:last + 1]):
+        return None
+    kind, _cross = _breakout_kind(closes, lows, level, last)
+    if kind is None:
+        return None
+    return {"level": round(level, 2), "touches": len(touches), "floor": round(floor, 2),
+            "height": round(height, 2), "target": round(level + height, 2), "kind": kind}
+
+
+def detect_cup_and_handle(highs, lows, closes):
+    """Detect a FRESH cup-and-handle breakout ending at the latest bar.
+
+    A cup is a rounded dip: down from a rim, a rounded base, back up to ~the same rim.
+    A handle is a small shallow dip right after. The signal fires when today's close breaks
+    above the rim. Returns a dict (rim, bottom, depth, handle_low, breakout_level, target)
+    or None. Target = breakout + full cup depth (the measured move)."""
+    n = len(closes)
+    if n < CUP_MIN_BARS + HANDLE_MIN_BARS + 2:
+        return None
+    swing_highs, swing_lows = find_pivots(highs, lows, CUP_K, RIGHT_K)
+    if len(swing_highs) < 2 or len(swing_lows) < 1:
+        return None
+
+    # Search rim pairs, most-recent right rim first, for a valid cup whose handle+breakout is fresh.
+    for r_idx in range(len(swing_highs) - 1, 0, -1):
+        i_r, right = swing_highs[r_idx]
+        # the right rim must leave room for a handle + breakout near the end
+        if i_r > n - (HANDLE_MIN_BARS + 1) or i_r < n - (HANDLE_MAX_BARS + BREAKOUT_MAX_BARS + 1):
+            continue
+        for l_idx in range(r_idx - 1, -1, -1):
+            i_l, left = swing_highs[l_idx]
+            span = i_r - i_l
+            if span < CUP_MIN_BARS:
+                continue
+            if span > CUP_MAX_BARS:
+                break
+            if abs(right - left) / left * 100 > RIM_TOL_PCT:   # rims must be roughly level
+                continue
+            rim_level = max(left, right)
+            base = min(lows[i_l:i_r + 1])
+            bottom_idx = i_l + lows[i_l:i_r + 1].index(base)
+            depth = rim_level - base
+            depth_pct = depth / rim_level * 100
+            if not (CUP_MIN_DEPTH_PCT <= depth_pct <= CUP_MAX_DEPTH_PCT):
+                continue
+            # roundedness: bottom roughly central AND price dwells near the base (not a sharp V)
+            frac = (bottom_idx - i_l) / span
+            if not (BOTTOM_CENTER_LO <= frac <= BOTTOM_CENTER_HI):
+                continue
+            near_base = sum(1 for lo in lows[i_l:i_r + 1] if lo <= base + 0.20 * depth)
+            if near_base < ROUND_MIN_BARS:
+                continue
+            # handle: shallow dip after the right rim that stays in the upper half of the cup
+            seg = closes[i_r + 1:]
+            if len(seg) < HANDLE_MIN_BARS:
+                continue
+            handle_low = min(seg)
+            handle_depth = rim_level - handle_low
+            if handle_depth > HANDLE_MAX_DEPTH_FRAC * depth:
+                continue
+            if handle_low < base + 0.5 * depth:                # handle dipped too deep into the cup
+                continue
+            # entry: a fresh breakout above the rim, OR a successful retest of the broken rim
+            kind, _cross = _breakout_kind(closes, lows, rim_level, i_r)
+            if kind is None:
+                continue
+            return {"rim": round(rim_level, 2), "bottom": round(base, 2),
+                    "depth": depth, "depth_pct": round(depth_pct, 1),
+                    "handle_low": round(handle_low, 2),
+                    "breakout_level": round(rim_level * (1 + BREAKOUT_BUFFER_PCT / 100), 2),
+                    "target": round(rim_level + depth, 2), "kind": kind}
+    return None
+
+
 def evaluate(highs, lows, closes, vols):
     if len(closes) < LEFT_K + RIGHT_K + 5:
         return None
     price = float(closes[-1]); x = len(closes) - 1
+
+    # Macro trend guard: don't issue a buy signal in an established downtrend.
+    # If the stock is >15% below its 6-month high it is in a macro downtrend — skip it.
+    lookback = min(126, len(closes))
+    high_6m = max(closes[-lookback:])
+    in_macro_downtrend = price < 0.85 * high_6m
+
     swing_highs, swing_lows = find_pivots(highs, lows, LEFT_K, RIGHT_K)
     if len(swing_lows) < 2 or len(swing_highs) < 2:
         return None
@@ -217,23 +385,58 @@ def evaluate(highs, lows, closes, vols):
     pct = (price - low_last[1]) / low_last[1] * 100
     in_zone = ENTRY_MIN_PCT <= pct <= ENTRY_MAX_PCT
     turning_up = closes[-1] > closes[-2]
-    prior = vols[-21:-1]                                             # prior up-to-20 days, excludes today
+    prior = vols[-22:-2]                                             # prior up-to-20 days, excludes the last 2
     prev_avg_vol = sum(prior) / len(prior) if prior else 0          # divide by what we actually have
-    volume_ok = prev_avg_vol > 0 and vols[-1] > VOL_MULT * prev_avg_vol  # volume confirmation
+    # Volume confirmation on EITHER of the last 2 bars: the bounce's volume day is often the day
+    # before our close check, and an intraday /daily run leaves the final bar's volume partial.
+    volume_ok = prev_avg_vol > 0 and any(v > VOL_MULT * prev_avg_vol for v in vols[-2:])
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
-    # Stability guard: reject erratic names that had a violent single-day move (up OR down) over the
-    # lookback (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
-    worst_drop, biggest_jump = largest_daily_swing(closes)
+    # Stability guard: reject erratic names that had a violent single-day move (up OR down) within
+    # the last ~year (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
+    worst_drop, biggest_jump = largest_daily_swing(closes[-ERRATIC_WINDOW:])
     worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
     erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
-    fires = pulled_back and turning_up and volume_ok and not erratic
+    fires = pulled_back and turning_up and volume_ok and not erratic and not in_macro_downtrend
+
+    # Cup-and-handle: a separate, standalone breakout signal (near the highs by construction,
+    # so the macro-downtrend guard doesn't apply; the erratic guard still does).
+    cup = detect_cup_and_handle(highs, lows, closes)
+    cup_fires = cup is not None and not erratic
+
+    # Flat-top breakout (the TCBK pattern): a multi-touch horizontal ceiling gives way.
+    # Flat tops sit near the highs, so both guards apply.
+    flat = detect_flat_top(highs, lows, closes)
+    flat_fires = flat is not None and not erratic and not in_macro_downtrend
+
+    # Golden cross (50-day SMA above 200-day): a regime confirmation tag, not a gate.
+    golden_cross = None
+    if len(closes) >= 210:
+        sma50 = sum(closes[-50:]) / 50
+        sma200 = sum(closes[-200:]) / 200
+        if sma50 > sma200:
+            past50 = sum(closes[-60:-10]) / 50           # the same SMAs ~10 bars ago
+            past200 = sum(closes[-210:-10]) / 200
+            golden_cross = "fresh" if past50 <= past200 else "active"
+
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
                 fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
                 erratic=erratic, worst_swing=round(worst_swing, 1),
-                support=support, sup_slope=sup_slope)
+                support=support, sup_slope=sup_slope,
+                in_macro_downtrend=in_macro_downtrend, high_6m=round(high_6m, 2),
+                cup_fires=cup_fires,
+                cup_target=cup["target"] if cup else None,
+                cup_depth=round(cup["depth"], 2) if cup else None,
+                cup_rim=cup["rim"] if cup else None,
+                cup_kind=cup["kind"] if cup else None,
+                flat_fires=flat_fires,
+                flat_target=flat["target"] if flat else None,
+                flat_level=flat["level"] if flat else None,
+                flat_touches=flat["touches"] if flat else None,
+                flat_kind=flat["kind"] if flat else None,
+                golden_cross=golden_cross)
 
 
 def get_ohlcv(data, sym):
@@ -355,17 +558,20 @@ def news_link(sym):
 def enrich_hits(hits):
     """For each chart-screen hit, add YoY revenue + the X-ray score, and only KEEP names whose
     fundamental health score is >= MIN_SCORE. The cheap rule score is computed first so we don't
-    waste an AI call on names that won't make the cut. Returns a list of dicts."""
+    waste an AI call on names that won't make the cut. Returns (list of dicts, drop-reason tally)."""
     enriched = []
+    drops = {"revenue": 0, "health_score": 0}
     for sym, r in hits:
         status, rev_label = revenue_growth(sym)
         if REQUIRE_CONFIRMED_GROWTH and status != "yes":
             reason = "declining" if status == "no" else "growth unverifiable"
             print(f"  drop {sym}: {rev_label} ({reason})")
+            drops["revenue"] += 1
             continue
         xr = xray.xray(sym, ai=False)                       # cheap rule-based score first
         if not xr.get("ok") or (xr.get("score") or 0) < MIN_SCORE:
             print(f"  drop {sym}: health score {xr.get('score') if xr.get('ok') else 'n/a'} < {MIN_SCORE}")
+            drops["health_score"] += 1
             continue
         try:                                                # passed the gate -> add the Sonnet verdict
             xray._ai_layer(sym, xr, web=os.environ.get("XRAY_WEB") == "1")
@@ -374,10 +580,25 @@ def enrich_hits(hits):
         news = fetch_news(sym)
         enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
         time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
-    return enriched
+    return enriched, drops
 
 
-def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
+def gate_misses(r):
+    """Which of the final chart conditions a pulled-back stock is missing (empty = it fires)."""
+    missing = []
+    if not r["turning_up"]:
+        missing.append("not turning up")
+    if not r["volume_ok"]:
+        missing.append("volume below average")
+    if r["erratic"]:
+        missing.append("erratic swings")
+    if r["in_macro_downtrend"]:
+        missing.append("macro downtrend")
+    return missing
+
+
+def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
+                  gate_fails=None, near_misses=None, drops=None):
     if scanned == 0:
         return (f"⚠️ Stock bot: scan FAILED — 0 of {universe_n} symbols "
                 f"returned data (likely rate-limited or a network error). No reliable "
@@ -390,6 +611,21 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     if not hits:
         lines.append(f"\nNo buy setups today that clear the bar (uptrend + higher-low bounce on volume + "
                      f"growing revenue + health score ≥ {MIN_SCORE}/10, not erratic).")
+        # Explain WHERE the funnel choked, so quiet days aren't a black box.
+        if gate_fails and sum(gate_fails.values()):
+            parts = [f"{n} {label}" for label, n in gate_fails.items() if n]
+            lines.append(f"\nWhy: of the {pulled} pulled back — " + ", ".join(parts) + ".")
+        if drops and sum(drops.values()):
+            parts = []
+            if drops.get("revenue"):
+                parts.append(f"{drops['revenue']} lacked confirmed revenue growth")
+            if drops.get("health_score"):
+                parts.append(f"{drops['health_score']} scored below {MIN_SCORE}/10")
+            lines.append("Chart setups dropped at the fundamentals gate: " + "; ".join(parts) + ".")
+        if near_misses:
+            lines.append("\n\U0001F440 Nearly there (one condition missing):")
+            for sym, price, cond in near_misses[:5]:
+                lines.append(f"• {sym} ${price:.2f} — waiting on: {cond}")
         return "\n".join(lines)
 
     lines.append("")
@@ -398,8 +634,22 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback):
     for h in hits:
         r = h["r"]
         lines.append("")
-        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | "
-                     f"target ${r['resistance']:.2f}")
+        # Pattern targets are measured moves (level + base height); the bounce uses resistance.
+        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
+        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
+        setups = []
+        if r.get("cup_fires"):
+            entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry 🔁"
+            setups.append(f"☕ Cup & Handle {entry} (rim ${r.get('cup_rim'):.2f}, depth ${r.get('cup_depth'):.2f})")
+        if r.get("flat_fires"):
+            entry = "breakout" if r.get("flat_kind") != "retest" else "retest entry 🔁"
+            setups.append(f"📏 Flat-top {entry} ({r.get('flat_touches')} touches at ${r.get('flat_level'):.2f})")
+        if r["fires"]:
+            setups.append("higher-low bounce")
+        if setups:
+            lines.append(f"  📐 Setup: {' + '.join(setups)}")
+        if r.get("golden_cross"):
+            lines.append(f"  ⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
         xr = h.get("xray")
         if xr and xr.get("ok"):
@@ -456,7 +706,8 @@ def main():
           f"{' [fallback list]' if used_fallback else ''}...")
     scanned = uptrends = pulled = 0
     hits = []
-    watchlist = []
+    watchlist = []           # (sym, price, [missing conditions]) for pulled-back names that didn't fire
+    gate_fails = {}          # tally of which final condition killed each pulled-back candidate
 
     for i in range(0, len(symbols), CHUNK):
         chunk = symbols[i:i + CHUNK]
@@ -477,16 +728,22 @@ def main():
             if r["pulled_back"]:
                 pulled += 1
                 if not r["fires"]:
-                    watchlist.append((sym, r["pct"]))
-            if r["fires"]:
+                    missing = gate_misses(r)
+                    for cond in missing:
+                        gate_fails[cond] = gate_fails.get(cond, 0) + 1
+                    watchlist.append((sym, r["price"], missing))
+            if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 
     print(f"\nFUNNEL: scanned {scanned} | uptrends {uptrends} | pulled back {pulled} | "
           f"chart setups {len(hits)}")
+    if gate_fails:
+        print("  final-gate failures among pulled-back: " +
+              ", ".join(f"{label}: {n}" for label, n in gate_fails.items()))
 
     # Fundamental gate (YoY revenue) + news, only for the handful of chart hits.
-    enriched = enrich_hits(hits)
+    enriched, drops = enrich_hits(hits)
 
     if enriched:
         print(f"\nBUY setups after revenue gate ({len(enriched)}):")
@@ -494,12 +751,15 @@ def main():
             r = h["r"]
             print(f"  BUY {h['sym']}: ${r['price']:.2f}  stop ${r['stop']:.2f}  "
                   f"target ${r['resistance']:.2f}  [{h['rev_label']}]")
+    # Near misses: pulled-back names missing exactly ONE condition (closest to firing).
+    near_misses = [(sym, price, missing[0]) for sym, price, missing in watchlist if len(missing) == 1]
     if watchlist:
         print("\nWatchlist (pulled back, awaiting confirmation):")
-        for sym, pct in watchlist[:10]:
-            print(f"  {sym}: {pct:.1f}% off low")
+        for sym, price, missing in watchlist[:10]:
+            print(f"  {sym} ${price:.2f}: missing {', '.join(missing) or '?'}")
 
-    summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback)
+    summary = build_summary(len(symbols), scanned, uptrends, pulled, enriched, used_fallback,
+                            gate_fails=gate_fails, near_misses=near_misses, drops=drops)
     sent = send_long(summary)
     if sent:
         print(f"\nSummary sent in {sent} message(s).")

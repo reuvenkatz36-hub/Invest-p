@@ -70,6 +70,23 @@ class TestScore(unittest.TestCase):
         self.assertFalse(r.get("known"))
         self.assertEqual(r["score"], 0)
 
+    def test_any_red_flag_caps_below_ten(self):
+        # The user's rule: 10/10 means a CLEAN sheet. A single red flag on an otherwise
+        # perfect board must drop the score below 10 (no rounding it back up to 10).
+        for red_override in ({"shortPercentOfFloat": 0.30},      # short interest red
+                             {"recommendationKey": "strong_sell",  # analyst red
+                              "targetMeanPrice": 70, "currentPrice": 100}):
+            r = score(red_override)
+            reds = [it["label"] for it in r["items"] if it["flag"] == "red"]
+            self.assertTrue(reds, f"expected a red flag for {red_override}")
+            self.assertLess(r["score"], 10, f"{red_override} -> {r['score']} with reds {reds}")
+
+    def test_clean_sheet_can_still_be_ten(self):
+        # The flip side: with zero red flags, a strong cheap name still reaches 10.
+        r = score()
+        self.assertFalse([it for it in r["items"] if it["flag"] == "red"])
+        self.assertEqual(r["score"], 10)
+
     def test_score_is_deterministic(self):
         self.assertEqual(score({"trailingPE": 36})["score"], score({"trailingPE": 36})["score"])
 

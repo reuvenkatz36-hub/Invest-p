@@ -79,8 +79,10 @@ def _performance(closed, unrealized, starting_capital):
     wins = [t for t in closed if t.get("outcome") == "win"]
     losses = [t for t in closed if t.get("outcome") == "loss"]
     pct = [t.get("pnl_pct") for t in closed if t.get("pnl_pct") is not None]
-    best = max(closed, key=lambda t: t.get("pnl_pct", -999), default=None)
-    worst = min(closed, key=lambda t: t.get("pnl_pct", 999), default=None)
+    # key must coerce a present-but-None pnl_pct (not just a missing key) or max/min raises TypeError
+    rated = [t for t in closed if t.get("pnl_pct") is not None]
+    best = max(rated, key=lambda t: t["pnl_pct"], default=None)
+    worst = min(rated, key=lambda t: t["pnl_pct"], default=None)
     realized_all = realized["all"]
     balance = round(starting_capital + realized_all, 2)              # cash + closed P&L
     equity = round(starting_capital + realized_all + (unrealized or 0), 2)  # like TradingView equity

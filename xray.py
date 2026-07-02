@@ -281,11 +281,14 @@ def evaluate(data):
     # ---- Layer 4: Balance-sheet strength ---- (cash-flow-aware: strong FCF can cover debt comfortably)
     cash, debt, de, cr = g("totalCash"), g("totalDebt"), g("debtToEquity"), g("currentRatio")
     debt_known = any(v is not None for v in (cash, debt, de, cr))
+    # FCF offsets debt only when ~3 years of free cash flow would clear it. AAPL-style names
+    # (huge debt, but FCF clears it in ~1y) stay green; names that need 4+ years (e.g. MRSH) flag red.
+    fcf_covers = (fcf is not None and fcf > 0 and debt is not None and debt <= 3 * fcf)
     debt_ok = (
-        (cash is not None and debt is not None and cash >= debt) or              # net cash
-        (fcf is not None and fcf > 0 and debt is not None and debt <= 5 * fcf) or # ~5y of FCF clears it
-        (de is not None and de < 100) or                                          # modest leverage
-        (cr is not None and cr >= 1.5 and (de is None or de < 200))               # liquid, not extreme
+        (cash is not None and debt is not None and cash >= debt) or   # net cash position
+        fcf_covers or                                                  # a few years of FCF clears it
+        (de is not None and de < 100) or                              # modest leverage
+        (cr is not None and cr >= 1.5 and (de is None or de < 200))  # liquid, not extreme
     )
     add("Balance-sheet strength", "Debt vs cash/cash-flow", f"cash {_money(cash)} vs debt {_money(debt)}",
         f3(debt_ok, debt_known), W_DEBT,
@@ -379,6 +382,10 @@ def evaluate(data):
 
     # Hard caps so an obviously risky stock can never read as "excellent":
     caps = []
+    # A perfect 10 is reserved for a clean sheet — a SINGLE red flag caps the score at 9.
+    # (Heavier or multiple red flags pull the weighted score lower than 9 on their own.)
+    if any(it["flag"] == "red" for it in items):
+        score = min(score, 9)
     if net_red and fcf_red:                 # losing money AND burning cash = speculative
         score = min(score, 4); caps.append("Losing money and burning cash")
     if ps_red:                              # priced at a huge multiple of actual sales
