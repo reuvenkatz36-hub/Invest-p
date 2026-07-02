@@ -167,7 +167,9 @@
     }
   ],
   "watch": [
-    "CLBT"
+    "CLBT",
+    "NBIS",
+    "RDDT"
   ],
   "account": {
     "starting_capital": 100000
