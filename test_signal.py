@@ -214,5 +214,53 @@ class TestGoldenCross(unittest.TestCase):
             self.assertIsNone(r["golden_cross"])
 
 
+class TestEnrichQualityGates(unittest.TestCase):
+    """The daily alert must show only clean sheets (zero red flags), capped at MAX_ALERTS,
+    ranked by score — and run the expensive AI/news enrichment ONLY for the finalists."""
+
+    def setUp(self):
+        import xray
+        self._orig = (sb.revenue_growth, xray.xray, xray._ai_layer, sb.fetch_news)
+        self.ai_calls = []
+        def fake_xray(sym, ai=False):
+            score, reds = self.profiles[sym]
+            items = [{"label": "Debt", "flag": "red"}] * reds + [{"label": "FCF", "flag": "green"}]
+            return {"ok": True, "score": score, "coverage": 0.9, "items": items,
+                    "verdict": "Excellent", "opportunity": "o", "danger": "d"}
+        sb.revenue_growth = lambda sym: self.revs.get(sym, ("yes", "rev +9% YoY"))
+        xray.xray = fake_xray
+        xray._ai_layer = lambda sym, xr, web=False: self.ai_calls.append(sym)
+        sb.fetch_news = lambda sym, limit=3: []
+
+    def tearDown(self):
+        import xray
+        sb.revenue_growth, xray.xray, xray._ai_layer, sb.fetch_news = self._orig
+
+    def test_red_flags_blocked_and_top_n_capped(self):
+        # 8 hits: one has a red flag, one has declining revenue, six are clean (scores 10..5)
+        self.profiles = {"REDF": (9, 1), "NORV": (10, 0),
+                         "A": (10, 0), "B": (9, 0), "C": (9, 0), "D": (8, 0), "E": (8, 0), "F": (8, 0)}
+        self.revs = {"NORV": ("no", "rev -2% YoY")}
+        hits = [(s, {"price": 10.0}) for s in self.profiles]
+        kept, drops = sb.enrich_hits(hits)
+        syms = [h["sym"] for h in kept]
+        self.assertNotIn("REDF", syms)                     # red flag -> out
+        self.assertNotIn("NORV", syms)                     # revenue -> out
+        self.assertLessEqual(len(kept), sb.MAX_ALERTS)     # capped
+        self.assertEqual(syms[0], "A")                     # best score first
+        self.assertEqual(drops["red_flags"], 1)
+        self.assertEqual(drops["revenue"], 1)
+        self.assertEqual(drops["beyond_top"], 6 - sb.MAX_ALERTS)
+        # expensive AI layer ran only for the finalists
+        self.assertEqual(sorted(self.ai_calls), sorted(syms))
+
+    def test_all_clean_under_cap_all_kept(self):
+        self.profiles = {"X": (9, 0), "Y": (10, 0)}
+        self.revs = {}
+        kept, drops = sb.enrich_hits([(s, {"price": 5.0}) for s in self.profiles])
+        self.assertEqual([h["sym"] for h in kept], ["Y", "X"])
+        self.assertEqual(drops["beyond_top"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

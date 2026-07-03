@@ -665,11 +665,46 @@ def handle_watch_remove(sym, trades):
     return f"Removed {sym} from your watchlist ({len(wl)} left)."
 
 
+def _setup_tag(r):
+    """One-line chart status shared by /watchlist and /scan."""
+    if r is None:
+        return "no price data"
+    if r.get("erratic"):
+        return f"\U0001F534 erratic ({r.get('worst_swing')}% day) — avoid"
+    if r.get("cup_fires"):
+        return "☕ cup & handle — ENTRY signal"
+    if r.get("flat_fires"):
+        return "📏 flat-top breakout — ENTRY signal"
+    if r["fires"]:
+        return "\U0001F7E2 full buy setup — ENTRY signal"
+    if r["pulled_back"]:
+        return "\U0001F7E1 pulled back, awaiting bounce"
+    if r["is_uptrend"]:
+        return "⚪ uptrend, no entry point yet"
+    return "\U0001F534 no setup right now"
+
+
 def handle_watchlist(trades):
     wl = trades.get("watch", [])
     if not wl:
         return "Your watchlist is empty. Add one with /watch NVDA."
-    return "\U0001F440 Watchlist: " + ", ".join(wl) + "\nSend /scan to check them for buy setups."
+    rev_icon = {"yes": "rev ✅", "no": "rev ⚠️", "unknown": "rev ❓"}
+    lines = [f"\U0001F440 Watchlist ({len(wl)}):"]
+    for sym in wl[:12]:
+        r, rev_status = quick_eval(sym)
+        xr = xray.xray(sym)
+        score = f"\U0001FA7B {xr['score']}/10" if xr.get("ok") else "\U0001FA7B n/a"
+        if r is None:
+            lines.append(f"• {sym}: no price data | {score}")
+            continue
+        star = " ⭐" if r.get("golden_cross") else ""
+        lines.append(f"• {sym} ${r['price']:.2f} — {_setup_tag(r)}{star}")
+        lines.append(f"   {score} | {rev_icon[rev_status]} | {r['pct']:.1f}% off its recent low")
+    if len(wl) > 12:
+        lines.append(f"…and {len(wl) - 12} more (showing the first 12).")
+    lines.append("")
+    lines.append("/analyze SYM for the full picture • /unwatch SYM to remove.")
+    return "\n".join(lines)
 
 
 def handle_scan(trades):

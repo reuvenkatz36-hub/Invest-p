@@ -46,8 +46,11 @@ jobs:
           DAILY_WORKFLOW: "main.yml"
         run: python chat_bot.py
 
+      # always() so state survives even when this run is CANCELLED by the next poller
+      # taking over (concurrency cancel-in-progress) — otherwise watchlist adds and
+      # trades logged during the run are silently lost.
       - name: Persist trade journal & state
-        if: ${{ success() || failure() }}
+        if: ${{ always() }}
         run: |
           git config user.name "stock-chat-bot"
           git config user.email "actions@users.noreply.github.com"
@@ -55,10 +58,19 @@ jobs:
           git add bot_state.json trades.json || true
           if git diff --cached --quiet; then
             echo "No state changes to commit."
-          else
-            git commit -m "Update chat bot state [skip ci]"
-            git push || true
+            exit 0
           fi
+          git commit -m "Update chat bot state [skip ci]"
+          for i in 1 2 3 4; do
+            if git push; then
+              exit 0
+            fi
+            echo "push failed (attempt $i) — rebasing and retrying"
+            git pull --rebase --autostash origin main || true
+            sleep $((i * 2))
+          done
+          echo "::warning::chat-bot state push failed after retries — watchlist/trade changes from this run may be lost"
+          exit 1
 
       - name: Relaunch (keep the bot alive)
         if: success()
