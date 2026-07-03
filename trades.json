@@ -41,6 +41,17 @@
       "setup": {
         "rev_status": "unknown"
       }
+    },
+    {
+      "sym": "ARGX",
+      "entry": 950.38,
+      "amount": 251850.7,
+      "shares": 265,
+      "date": "2026-07-03",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "off_strategy": "unconfirmed_revenue"
     }
   ],
   "closed": [
