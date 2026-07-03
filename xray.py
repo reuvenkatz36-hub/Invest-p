@@ -53,15 +53,37 @@ def _money(x):
 
 
 def _rev_growth_from_statements(t):
-    """Statement-based YoY revenue growth (latest quarter vs same quarter a year ago) —
-    the same method the daily scan shows, so the X-ray stays consistent with it."""
+    """Statement-based YoY revenue growth — latest quarterly column vs the column DATED
+    ~1 year earlier (blind index positions broke on mixed annual/TTM columns), with an
+    annual-statement fallback for semi-annual reporters. Keeps the X-ray consistent with
+    the daily scan's revenue check."""
     try:
         for attr in ("quarterly_income_stmt", "quarterly_financials"):
             df = getattr(t, attr, None)
-            if df is not None and not df.empty and "Total Revenue" in df.index:
-                rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
-                if len(rev) >= 5 and float(rev.iloc[4]) != 0:
-                    return (float(rev.iloc[0]) - float(rev.iloc[4])) / abs(float(rev.iloc[4]))
+            if df is None or df.empty or "Total Revenue" not in df.index:
+                continue
+            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
+            if len(rev) < 2:
+                continue
+            latest_date, latest = rev.index[0], float(rev.iloc[0])
+            best, best_gap = None, None
+            for d, v in rev.iloc[1:].items():
+                gap = abs((latest_date - d).days - 365)
+                if gap <= 95 and (best_gap is None or gap < best_gap):
+                    best, best_gap = float(v), gap
+            if best and best != 0:
+                g = (latest - best) / abs(best)
+                if abs(g) <= 2:                     # sanity: >200% = mislabeled columns
+                    return g
+            break
+    except Exception:
+        pass
+    try:                                            # annual fallback (e.g. ARGX reports semi-annually)
+        df = getattr(t, "income_stmt", None)
+        if df is not None and not df.empty and "Total Revenue" in df.index:
+            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
+            if len(rev) >= 2 and float(rev.iloc[1]) != 0:
+                return (float(rev.iloc[0]) - float(rev.iloc[1])) / abs(float(rev.iloc[1]))
     except Exception:
         pass
     return None

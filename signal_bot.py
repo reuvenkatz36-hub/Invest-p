@@ -466,34 +466,65 @@ def download_chunk(chunk, retries=3):
     return None
 
 
+def _rev_label(pct):
+    status = "yes" if pct > 0 else "no"
+    return (status, f"rev {pct:+.0f}% YoY")
+
+
 def revenue_growth(sym):
-    """Year-over-year revenue check: latest quarter vs the same quarter a year ago.
-    Returns (status, label) where status is 'yes' (growing), 'no' (declining), or
-    'unknown' (not enough data). Only called for stocks that pass the chart screen."""
+    """Year-over-year revenue check. Returns (status, label): 'yes' (growing), 'no'
+    (declining), or 'unknown'. Tries, in order:
+      1. Yahoo's own revenueGrowth figure (most reliable when present);
+      2. quarterly statements — latest column vs the column DATED ~1 year earlier
+         (index-position compares broke on mixed annual/TTM columns: MU showed +346%);
+      3. annual statements — latest fiscal year vs the previous one (covers foreign
+         issuers like ARGX that report semi-annually and lack 5 quarterly columns)."""
     try:
         t = yf.Ticker(sym)
-        df = None
-        for attr in ("quarterly_income_stmt", "quarterly_financials"):
-            df = getattr(t, attr, None)
-            if df is not None and not df.empty and "Total Revenue" in df.index:
-                break
-            df = None
-        if df is None:
-            return ("unknown", "rev n/a")
-        rev = df.loc["Total Revenue"].dropna()
-        # columns are quarter-end dates; sort newest-first
-        rev = rev.sort_index(ascending=False)
-        if len(rev) < 5:
-            return ("unknown", "rev n/a")          # need 5 quarters for a YoY compare
-        latest = float(rev.iloc[0]); year_ago = float(rev.iloc[4])
-        if year_ago == 0:
-            return ("unknown", "rev n/a")
-        pct = (latest - year_ago) / abs(year_ago) * 100
-        if latest > year_ago:
-            return ("yes", f"rev +{pct:.0f}% YoY")
-        return ("no", f"rev {pct:.0f}% YoY")
     except Exception:
         return ("unknown", "rev n/a")
+
+    try:                                            # 1) Yahoo's precomputed YoY growth
+        rg = (t.info or {}).get("revenueGrowth")
+        if isinstance(rg, (int, float)):
+            if abs(rg) > 5:                         # percentage form slipped through
+                rg /= 100.0
+            return _rev_label(rg * 100)
+    except Exception:
+        pass
+
+    try:                                            # 2) quarterly, date-matched ~1y apart
+        for attr in ("quarterly_income_stmt", "quarterly_financials"):
+            df = getattr(t, attr, None)
+            if df is None or df.empty or "Total Revenue" not in df.index:
+                continue
+            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
+            if len(rev) < 2:
+                continue
+            latest_date, latest = rev.index[0], float(rev.iloc[0])
+            best, best_gap = None, None
+            for d, v in rev.iloc[1:].items():
+                gap = abs((latest_date - d).days - 365)
+                if gap <= 95 and (best_gap is None or gap < best_gap):   # a real year apart
+                    best, best_gap = float(v), gap
+            if best and best != 0:
+                pct = (latest - best) / abs(best) * 100
+                if abs(pct) <= 200:                 # sanity: >200% = mixed/mislabeled columns
+                    return _rev_label(pct)
+            break
+    except Exception:
+        pass
+
+    try:                                            # 3) annual: latest FY vs previous FY
+        df = getattr(t, "income_stmt", None)
+        if df is not None and not df.empty and "Total Revenue" in df.index:
+            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
+            if len(rev) >= 2 and float(rev.iloc[1]) != 0:
+                pct = (float(rev.iloc[0]) - float(rev.iloc[1])) / abs(float(rev.iloc[1])) * 100
+                return _rev_label(pct)
+    except Exception:
+        pass
+    return ("unknown", "rev n/a")
 
 
 # Every free, no-API-key stock-news feed we pull from. Google News alone already

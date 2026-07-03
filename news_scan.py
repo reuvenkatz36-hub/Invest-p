@@ -158,6 +158,10 @@ def evaluate_candidates(picks):
             dropped.append(f"{sym} ({rev_label})")
             continue
         verdict, rank = chart_verdict(r)
+        if rank == 0:                               # erratic or unpriceable — never a pick
+            reason = "erratic swings" if (r or {}).get("erratic") else "no price data"
+            dropped.append(f"{sym} ({reason})")
+            continue
         kept.append(dict(sym=sym, catalyst=p["catalyst"], score=score, verdict=verdict,
                          rank=rank, rev_label=rev_label,
                          price=r.get("price") if r else None,
