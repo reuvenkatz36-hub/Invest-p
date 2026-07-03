@@ -115,5 +115,39 @@ class TestMessage(unittest.TestCase):
         self.assertIn("Fed holds rates", msg)
 
 
+class TestWatchTargetAlerts(unittest.TestCase):
+    def test_target_hit_and_not_hit(self):
+        import json, tempfile, os as _os
+        trades = {"watch": ["AAA", "BBB", "CCC"],
+                  "watch_targets": {"AAA": 100.0, "BBB": 500.0}}   # CCC has no target
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(trades, f)
+            path = f.name
+        prices = {"AAA": 105.0, "BBB": 480.0}
+        orig = (sb.download_chunk, sb.get_ohlcv)
+        sb.download_chunk = lambda syms, retries=2: {"syms": syms}
+        sb.get_ohlcv = lambda data, sym: ([1], [1], [prices[sym]], [1])
+        try:
+            import news_scan as ns
+            lines = ns.check_watch_targets(trades_file=path)
+        finally:
+            sb.download_chunk, sb.get_ohlcv = orig
+            _os.unlink(path)
+        self.assertEqual(len(lines), 1)                    # only AAA is at/above target
+        self.assertIn("AAA", lines[0])
+        self.assertIn("105.00", lines[0])
+
+    def test_no_targets_no_alerts(self):
+        import json, tempfile, os as _os
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"watch": ["AAA"]}, f)
+            path = f.name
+        import news_scan as ns
+        try:
+            self.assertEqual(ns.check_watch_targets(trades_file=path), [])
+        finally:
+            _os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -193,15 +193,54 @@ def build_message(results, dropped, headlines, session_label):
     return "\n".join(lines)
 
 
+def check_watch_targets(trades_file=None):
+    """Watchlist target-price alerts for the morning message. Reads the trade journal,
+    prices every watch symbol that has a target, and returns alert lines for those at or
+    above it. Best-effort — pricing errors just skip a symbol."""
+    trades_file = trades_file or os.environ.get("TRADES_FILE", "trades.json")
+    try:
+        with open(trades_file) as f:
+            trades = json.load(f)
+    except Exception:
+        return []
+    targets = trades.get("watch_targets") or {}
+    syms = [s for s in trades.get("watch", []) if targets.get(s)]
+    if not syms:
+        return []
+    lines = []
+    try:
+        data = sb.download_chunk(syms, retries=2)
+    except Exception:
+        data = None
+    if data is None:
+        return []
+    for sym in syms:
+        try:
+            ohlcv = sb.get_ohlcv(data, sym)
+            if not ohlcv:
+                continue
+            price = float(ohlcv[2][-1])
+            tgt = float(targets[sym])
+            if price >= tgt:
+                lines.append(f"\U0001F3AF {sym} reached your target: ${price:.2f} ≥ ${tgt:g} "
+                             f"(set /unwatch {sym} to stop this alert)")
+        except Exception:
+            continue
+    return lines
+
+
 def main():
     now = datetime.datetime.utcnow()
     session_label = "pre-open" if now.hour <= 13 else "post-open"   # 13:00/14:00 UTC runs (EDT)
+    target_hits = check_watch_targets()
     headlines = fetch_market_headlines()
     print(f"Fetched {len(headlines)} headlines.")
     picks = pick_candidates(headlines)
     print(f"Claude proposed {len(picks)} candidates: {[p['ticker'] for p in picks]}")
     results, dropped = evaluate_candidates(picks)
     msg = build_message(results, dropped, headlines, session_label)
+    if target_hits:
+        msg = "\n".join(target_hits) + "\n\n" + msg
     print("\n" + msg)
     sent = sb.send_long(msg)
     print(f"\nSent in {sent} message(s)." if sent else "\nSend FAILED.")
