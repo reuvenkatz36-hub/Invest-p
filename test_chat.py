@@ -74,5 +74,32 @@ class TestRevenueGate(unittest.TestCase):
         self.assertNotIn("FORCE", cb.extract_ticker("bought 10 DAC at 50 force") or "")
 
 
+class TestWatchTargets(unittest.TestCase):
+    def test_watch_with_target_stores_it(self):
+        trades = {"open": [], "closed": []}
+        msg = cb.handle_watch_add("NVDA", trades, "NVDA 250")
+        self.assertEqual(trades["watch_targets"]["NVDA"], 250.0)
+        self.assertIn("250", msg)
+        self.assertIn("NVDA", trades["watch"])
+
+    def test_watch_without_target_still_works(self):
+        trades = {"open": [], "closed": []}
+        cb.handle_watch_add("SHOP", trades, "SHOP")
+        self.assertIn("SHOP", trades["watch"])
+        self.assertNotIn("SHOP", trades.get("watch_targets", {}))
+
+    def test_retarget_existing_symbol(self):
+        trades = {"open": [], "closed": [], "watch": ["LII"]}
+        msg = cb.handle_watch_add("LII", trades, "LII target 700")
+        self.assertEqual(trades["watch_targets"]["LII"], 700.0)
+        self.assertIn("Target", msg)
+
+    def test_unwatch_clears_target(self):
+        trades = {"open": [], "closed": [], "watch": ["MAS"], "watch_targets": {"MAS": 90.0}}
+        cb.handle_watch_remove("MAS", trades)
+        self.assertNotIn("MAS", trades["watch"])
+        self.assertNotIn("MAS", trades["watch_targets"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

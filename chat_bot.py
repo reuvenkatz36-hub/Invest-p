@@ -511,7 +511,7 @@ COMMANDS = [
     ("dashboard",  "Open your web dashboard (P&L, graph, news)", ""),
     ("capital",    "Set account starting capital",               "/capital 100000"),
     ("learn",      "What your losing trades have in common",     ""),
-    ("watch",      "Add a stock to your watchlist",              "/watch AAPL"),
+    ("watch",      "Add a stock to your watchlist (+ optional target)", "/watch AAPL 250"),
     ("unwatch",    "Remove a stock from your watchlist",         "/unwatch AAPL"),
     ("watchlist",  "Show your watchlist",                        ""),
     ("scan",       "Scan watchlist + positions for buy setups",  ""),
@@ -649,16 +649,27 @@ def handle_stats(trades):
     return "\n".join(lines)
 
 
-def handle_watch_add(sym, trades):
+def handle_watch_add(sym, trades, arg=""):
     wl = trades.setdefault("watch", [])
+    # optional target price: "/watch NVDA 250", "/watch NVDA target 250"
+    target = None
+    m = re.search(r"(?:target\s*)?\$?(\d+(?:\.\d+)?)\s*$", (arg or "").strip())
+    if m:
+        target = float(m.group(1))
+    if target is not None:
+        trades.setdefault("watch_targets", {})[sym] = target
     if sym in wl:
+        if target is not None:
+            return f"\U0001F3AF Target for {sym} set to ${target:g} — I'll tell you in the morning scan when it gets there."
         return f"{sym} is already on your watchlist."
     wl.append(sym)
-    return f"\U0001F440 Added {sym} to your watchlist ({len(wl)} total). Send /scan to check them."
+    tgt_note = f" with a \U0001F3AF ${target:g} target — I'll alert you in the morning scan when it hits" if target else ""
+    return f"\U0001F440 Added {sym} to your watchlist ({len(wl)} total){tgt_note}. Send /scan to check them."
 
 
 def handle_watch_remove(sym, trades):
     wl = trades.setdefault("watch", [])
+    trades.get("watch_targets", {}).pop(sym, None)
     if sym not in wl:
         return f"{sym} isn't on your watchlist."
     wl.remove(sym)
@@ -689,6 +700,7 @@ def handle_watchlist(trades):
     if not wl:
         return "Your watchlist is empty. Add one with /watch NVDA."
     rev_icon = {"yes": "rev ✅", "no": "rev ⚠️", "unknown": "rev ❓"}
+    targets = trades.get("watch_targets", {})
     lines = [f"\U0001F440 Watchlist ({len(wl)}):"]
     for sym in wl[:12]:
         r, rev_status = quick_eval(sym)
@@ -700,6 +712,13 @@ def handle_watchlist(trades):
         star = " ⭐" if r.get("golden_cross") else ""
         lines.append(f"• {sym} ${r['price']:.2f} — {_setup_tag(r)}{star}")
         lines.append(f"   {score} | {rev_icon[rev_status]} | {r['pct']:.1f}% off its recent low")
+        tgt = targets.get(sym)
+        if tgt:
+            if r["price"] >= tgt:
+                lines.append(f"   \U0001F3AF TARGET REACHED — ${r['price']:.2f} ≥ your ${tgt:g}")
+            else:
+                away = (tgt / r["price"] - 1) * 100
+                lines.append(f"   \U0001F3AF target ${tgt:g} ({away:+.1f}% away)")
     if len(wl) > 12:
         lines.append(f"…and {len(wl) - 12} more (showing the first 12).")
     lines.append("")
@@ -825,7 +844,7 @@ def handle_command(cmd, arg, trades):
     if cmd == "learn":
         return handle_learn(trades)
     if cmd == "watch":
-        return handle_watch_add(sym, trades) if sym else "Usage: /watch NVDA"
+        return handle_watch_add(sym, trades, arg) if sym else "Usage: /watch NVDA  (or with a target: /watch NVDA 250)"
     if cmd in ("unwatch", "unwatchlist"):
         return handle_watch_remove(sym, trades) if sym else "Usage: /unwatch NVDA"
     if cmd in ("watchlist", "watches", "wl"):
