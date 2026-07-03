@@ -586,7 +586,10 @@ def enrich_hits(hits):
         passed.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, xray=xr))
         time.sleep(0.2)   # be gentle on the fundamentals endpoints
 
-    passed.sort(key=lambda h: (h["xray"].get("score", 0), h["xray"].get("coverage", 0)), reverse=True)
+    # Rank: highest health score first, then how perfectly the chart fits the strategy
+    # (multiple signals at once = closer to the textbook setup), then data coverage.
+    passed.sort(key=lambda h: (h["xray"].get("score", 0), setup_strength(h["r"]),
+                               h["xray"].get("coverage", 0)), reverse=True)
     finalists, overflow = passed[:MAX_ALERTS], passed[MAX_ALERTS:]
     drops["beyond_top"] = len(overflow)
     for h in overflow:
@@ -600,6 +603,27 @@ def enrich_hits(hits):
         h["news"] = fetch_news(h["sym"])
         time.sleep(0.3)
     return finalists, drops
+
+
+def setup_strength(r):
+    """How perfectly a hit matches the strategy: more independent signals firing at once =
+    a stronger, more textbook setup. Used to rank the daily finalists (after health score)."""
+    s = 0.0
+    if r.get("fires"):
+        s += 2.0                                            # full higher-low bounce, all conditions
+    if r.get("cup_fires"):
+        s += 2.0 if r.get("cup_kind") != "retest" else 1.5  # fresh breakout beats a retest
+    if r.get("flat_fires"):
+        s += 2.0 if r.get("flat_kind") != "retest" else 1.5
+    if r.get("golden_cross") == "fresh":
+        s += 1.0
+    elif r.get("golden_cross") == "active":
+        s += 0.5
+    if r.get("is_uptrend"):
+        s += 0.5
+    if r.get("volume_ok"):
+        s += 0.5
+    return s
 
 
 def gate_misses(r):

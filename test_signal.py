@@ -254,6 +254,19 @@ class TestEnrichQualityGates(unittest.TestCase):
         # expensive AI layer ran only for the finalists
         self.assertEqual(sorted(self.ai_calls), sorted(syms))
 
+    def test_equal_scores_ranked_by_strategy_fit(self):
+        # same health score -> the more textbook setup (bounce+cup+fresh golden cross)
+        # must outrank a lone retest
+        self.profiles = {"WEAK": (9, 0), "STRONG": (9, 0)}
+        self.revs = {}
+        strong_r = {"price": 10.0, "fires": True, "cup_fires": True, "cup_kind": "breakout",
+                    "golden_cross": "fresh", "is_uptrend": True, "volume_ok": True}
+        weak_r = {"price": 10.0, "fires": False, "flat_fires": True, "flat_kind": "retest",
+                  "golden_cross": None, "is_uptrend": True, "volume_ok": False}
+        kept, _ = sb.enrich_hits([("WEAK", weak_r), ("STRONG", strong_r)])
+        self.assertEqual([h["sym"] for h in kept], ["STRONG", "WEAK"])
+        self.assertGreater(sb.setup_strength(strong_r), sb.setup_strength(weak_r))
+
     def test_all_clean_under_cap_all_kept(self):
         self.profiles = {"X": (9, 0), "Y": (10, 0)}
         self.revs = {}
