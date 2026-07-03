@@ -484,46 +484,69 @@ def revenue_growth(sym):
     except Exception:
         return ("unknown", "rev n/a")
 
-    try:                                            # 1) Yahoo's precomputed YoY growth
-        rg = (t.info or {}).get("revenueGrowth")
-        if isinstance(rg, (int, float)):
-            if abs(rg) > 5:                         # percentage form slipped through
-                rg /= 100.0
-            return _rev_label(rg * 100)
-    except Exception:
-        pass
+    diag = []
+    for attempt in range(2):                        # 1) Yahoo's precomputed YoY growth
+        try:                                        #    (this endpoint gets rate-limited; retry once)
+            info = t.info or {}
+            rg = info.get("revenueGrowth")
+            if isinstance(rg, (int, float)):
+                if abs(rg) > 5:                     # percentage form slipped through
+                    rg /= 100.0
+                return _rev_label(rg * 100)
+            diag.append("info empty" if not info else "info has no revenueGrowth")
+            if info:
+                break
+        except Exception as e:
+            diag.append(f"info error: {e}")
+        if attempt == 0:
+            time.sleep(2)
+
+    def _revenue_series(df):
+        """The revenue row from a statement, newest-first, with a proper datetime index."""
+        if df is None or getattr(df, "empty", True):
+            return None
+        for row in ("Total Revenue", "Operating Revenue", "Revenue"):
+            if row in df.index:
+                rev = df.loc[row].dropna()
+                if len(rev):
+                    rev.index = pd.to_datetime(rev.index, errors="coerce")
+                    rev = rev[rev.index.notna()]
+                    return rev.sort_index(ascending=False)
+        return None
 
     try:                                            # 2) quarterly, date-matched ~1y apart
         for attr in ("quarterly_income_stmt", "quarterly_financials"):
-            df = getattr(t, attr, None)
-            if df is None or df.empty or "Total Revenue" not in df.index:
-                continue
-            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
-            if len(rev) < 2:
+            rev = _revenue_series(getattr(t, attr, None))
+            if rev is None or len(rev) < 2:
                 continue
             latest_date, latest = rev.index[0], float(rev.iloc[0])
             best, best_gap = None, None
             for d, v in rev.iloc[1:].items():
                 gap = abs((latest_date - d).days - 365)
-                if gap <= 95 and (best_gap is None or gap < best_gap):   # a real year apart
+                if gap <= 120 and (best_gap is None or gap < best_gap):  # a real year apart
                     best, best_gap = float(v), gap
             if best and best != 0:
                 pct = (latest - best) / abs(best) * 100
                 if abs(pct) <= 200:                 # sanity: >200% = mixed/mislabeled columns
                     return _rev_label(pct)
+                diag.append(f"quarterly implausible ({pct:.0f}%)")
+            else:
+                diag.append(f"quarterly: no column ~1y from {latest_date.date()} ({len(rev)} cols)")
             break
-    except Exception:
-        pass
+        else:
+            diag.append("no quarterly statement")
+    except Exception as e:
+        diag.append(f"quarterly error: {e}")
 
     try:                                            # 3) annual: latest FY vs previous FY
-        df = getattr(t, "income_stmt", None)
-        if df is not None and not df.empty and "Total Revenue" in df.index:
-            rev = df.loc["Total Revenue"].dropna().sort_index(ascending=False)
-            if len(rev) >= 2 and float(rev.iloc[1]) != 0:
-                pct = (float(rev.iloc[0]) - float(rev.iloc[1])) / abs(float(rev.iloc[1])) * 100
-                return _rev_label(pct)
-    except Exception:
-        pass
+        rev = _revenue_series(getattr(t, "income_stmt", None))
+        if rev is not None and len(rev) >= 2 and float(rev.iloc[1]) != 0:
+            pct = (float(rev.iloc[0]) - float(rev.iloc[1])) / abs(float(rev.iloc[1])) * 100
+            return _rev_label(pct)
+        diag.append("annual statement missing/short")
+    except Exception as e:
+        diag.append(f"annual error: {e}")
+    print(f"revenue_growth({sym}) -> unknown: " + "; ".join(diag), flush=True)
     return ("unknown", "rev n/a")
 
 
