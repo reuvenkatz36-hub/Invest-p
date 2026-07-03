@@ -26,6 +26,7 @@ NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
                                    # (drops both declining and unverifiable 'n/a' names)
 MIN_SCORE = int(os.environ.get("MIN_SCORE", "8"))   # only suggest stocks with a health score >= this
+MAX_ALERTS = int(os.environ.get("MAX_ALERTS", "5")) # cap the daily alert at the N best clean-sheet names
 ERRATIC_WINDOW = 252   # judge "erratic" on the last ~12 months only (an old earnings gap shouldn't blacklist forever)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
@@ -556,11 +557,15 @@ def news_link(sym):
 
 
 def enrich_hits(hits):
-    """For each chart-screen hit, add YoY revenue + the X-ray score, and only KEEP names whose
-    fundamental health score is >= MIN_SCORE. The cheap rule score is computed first so we don't
-    waste an AI call on names that won't make the cut. Returns (list of dicts, drop-reason tally)."""
-    enriched = []
-    drops = {"revenue": 0, "health_score": 0}
+    """Quality-gate the chart hits down to THE BEST OF THE BEST, then enrich only those.
+
+    Gates, in order: confirmed YoY revenue growth -> health score >= MIN_SCORE ->
+    ZERO red flags (a clean sheet — the user only wants near-perfect names). Survivors
+    are ranked by score (then data coverage) and capped at MAX_ALERTS; the expensive
+    Sonnet verdict + news run ONLY for those finalists, so the scan can't blow the job
+    timeout on a hit-heavy day. Returns (list of dicts, drop-reason tally)."""
+    passed = []
+    drops = {"revenue": 0, "health_score": 0, "red_flags": 0, "beyond_top": 0}
     for sym, r in hits:
         status, rev_label = revenue_growth(sym)
         if REQUIRE_CONFIRMED_GROWTH and status != "yes":
@@ -573,14 +578,28 @@ def enrich_hits(hits):
             print(f"  drop {sym}: health score {xr.get('score') if xr.get('ok') else 'n/a'} < {MIN_SCORE}")
             drops["health_score"] += 1
             continue
-        try:                                                # passed the gate -> add the Sonnet verdict
-            xray._ai_layer(sym, xr, web=os.environ.get("XRAY_WEB") == "1")
+        reds = [it["label"] for it in xr.get("items", []) if it.get("flag") == "red"]
+        if reds:                                            # only clean sheets make the alert
+            print(f"  drop {sym}: {len(reds)} red flag(s) — {', '.join(reds[:3])}")
+            drops["red_flags"] += 1
+            continue
+        passed.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, xray=xr))
+        time.sleep(0.2)   # be gentle on the fundamentals endpoints
+
+    passed.sort(key=lambda h: (h["xray"].get("score", 0), h["xray"].get("coverage", 0)), reverse=True)
+    finalists, overflow = passed[:MAX_ALERTS], passed[MAX_ALERTS:]
+    drops["beyond_top"] = len(overflow)
+    for h in overflow:
+        print(f"  beyond top {MAX_ALERTS}: {h['sym']} (score {h['xray'].get('score')})")
+
+    for h in finalists:                                     # expensive extras: finalists only
+        try:
+            xray._ai_layer(h["sym"], h["xray"], web=os.environ.get("XRAY_WEB") == "1")
         except Exception as e:
-            print(f"  xray AI failed for {sym}: {e}")
-        news = fetch_news(sym)
-        enriched.append(dict(sym=sym, r=r, rev_status=status, rev_label=rev_label, news=news, xray=xr))
-        time.sleep(0.3)   # be gentle on the news/fundamentals endpoints
-    return enriched, drops
+            print(f"  xray AI failed for {h['sym']}: {e}")
+        h["news"] = fetch_news(h["sym"])
+        time.sleep(0.3)
+    return finalists, drops
 
 
 def gate_misses(r):
@@ -608,20 +627,26 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
              f"{pulled} pulled back | {len(hits)} BUY setup(s)"]
     if used_fallback:
         lines.append("(used fallback symbol list — live universe fetch failed)")
+    drop_parts = []
+    if drops:
+        if drops.get("revenue"):
+            drop_parts.append(f"{drops['revenue']} lacked confirmed revenue growth")
+        if drops.get("health_score"):
+            drop_parts.append(f"{drops['health_score']} scored below {MIN_SCORE}/10")
+        if drops.get("red_flags"):
+            drop_parts.append(f"{drops['red_flags']} had red flags (not a clean sheet)")
+        if drops.get("beyond_top"):
+            drop_parts.append(f"{drops['beyond_top']} passed but ranked below the top {MAX_ALERTS}")
+
     if not hits:
-        lines.append(f"\nNo buy setups today that clear the bar (uptrend + higher-low bounce on volume + "
-                     f"growing revenue + health score ≥ {MIN_SCORE}/10, not erratic).")
+        lines.append(f"\nNo buy setups today that clear the bar (chart entry + growing revenue + "
+                     f"health score ≥ {MIN_SCORE}/10 with ZERO red flags, not erratic).")
         # Explain WHERE the funnel choked, so quiet days aren't a black box.
         if gate_fails and sum(gate_fails.values()):
             parts = [f"{n} {label}" for label, n in gate_fails.items() if n]
             lines.append(f"\nWhy: of the {pulled} pulled back — " + ", ".join(parts) + ".")
-        if drops and sum(drops.values()):
-            parts = []
-            if drops.get("revenue"):
-                parts.append(f"{drops['revenue']} lacked confirmed revenue growth")
-            if drops.get("health_score"):
-                parts.append(f"{drops['health_score']} scored below {MIN_SCORE}/10")
-            lines.append("Chart setups dropped at the fundamentals gate: " + "; ".join(parts) + ".")
+        if drop_parts:
+            lines.append("Chart setups dropped at the quality gates: " + "; ".join(drop_parts) + ".")
         if near_misses:
             lines.append("\n\U0001F440 Nearly there (one condition missing):")
             for sym, price, cond in near_misses[:5]:
@@ -629,7 +654,10 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
         return "\n".join(lines)
 
     lines.append("")
-    lines.append(f"\U0001F6A8 BUY setups (health score ≥ {MIN_SCORE}/10, ranked):")
+    lines.append(f"\U0001F6A8 BUY setups — the best of the best (clean sheet, zero red flags, "
+                 f"score ≥ {MIN_SCORE}/10, top {MAX_ALERTS}):")
+    if drop_parts:
+        lines.append("(" + "; ".join(drop_parts) + ")")
     hits = sorted(hits, key=lambda h: (h.get("xray") or {}).get("score", 0), reverse=True)
     for h in hits:
         r = h["r"]
