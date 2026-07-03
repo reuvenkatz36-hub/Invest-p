@@ -70,11 +70,13 @@ class TestRankingAndGates(unittest.TestCase):
             "UPTR": {**base, "fires": False},
             "LOWS": {**base, "fires": True},              # will fail the health bar
             "NORV": {**base, "fires": True},              # will fail revenue
+            "WILD": {**base, "fires": False, "erratic": True},   # erratic — never a pick
         }
-        score_by_sym = {"FIRE": 8, "UPTR": 9, "LOWS": 5, "NORV": 9}
+        score_by_sym = {"FIRE": 8, "UPTR": 9, "LOWS": 5, "NORV": 9, "WILD": 10}
         rev_by_sym = {"FIRE": ("yes", "rev +9% YoY"), "UPTR": ("yes", "rev +4% YoY"),
-                      "LOWS": ("yes", "rev +2% YoY"), "NORV": ("no", "rev -3% YoY")}
-        picks = [{"ticker": t, "catalyst": "news"} for t in ("UPTR", "LOWS", "NORV", "FIRE")]
+                      "LOWS": ("yes", "rev +2% YoY"), "NORV": ("no", "rev -3% YoY"),
+                      "WILD": ("yes", "rev +30% YoY")}
+        picks = [{"ticker": t, "catalyst": "news"} for t in ("UPTR", "LOWS", "NORV", "FIRE", "WILD")]
         self._patch(r_by_sym, score_by_sym, rev_by_sym)
         try:
             kept, dropped = ns.evaluate_candidates(picks)
@@ -84,6 +86,8 @@ class TestRankingAndGates(unittest.TestCase):
         self.assertEqual([c["sym"] for c in kept], ["FIRE", "UPTR"])
         self.assertTrue(any("LOWS" in d for d in dropped))
         self.assertTrue(any("NORV" in d for d in dropped))
+        # erratic name is dropped with its reason, never shown as a numbered pick
+        self.assertTrue(any("WILD" in d and "erratic" in d for d in dropped))
 
     def test_chart_verdict_ranks(self):
         base = dict(erratic=False, cup_fires=False, flat_fires=False, fires=False,

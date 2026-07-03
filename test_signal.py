@@ -275,5 +275,67 @@ class TestEnrichQualityGates(unittest.TestCase):
         self.assertEqual(drops["beyond_top"], 0)
 
 
+class TestRevenueGrowth(unittest.TestCase):
+    """revenue_growth must survive yfinance's messy statements: mixed annual/TTM columns
+    (the MU +346% bug) and semi-annual foreign reporters (the ARGX 'rev n/a' block)."""
+
+    class _FakeTicker:
+        def __init__(self, info=None, quarterly=None, annual=None):
+            self.info = info or {}
+            self.quarterly_income_stmt = quarterly
+            self.quarterly_financials = None
+            self.income_stmt = annual
+
+    def _patch(self, fake):
+        self._orig = sb.yf.Ticker
+        sb.yf.Ticker = lambda sym: fake
+
+    def tearDown(self):
+        sb.yf.Ticker = self._orig
+
+    @staticmethod
+    def _stmt(dates, values):
+        import pandas as pd
+        return pd.DataFrame([values], index=["Total Revenue"], columns=pd.to_datetime(dates))
+
+    def test_yahoo_field_wins(self):
+        self._patch(self._FakeTicker(info={"revenueGrowth": 0.13}))
+        self.assertEqual(sb.revenue_growth("CRM"), ("yes", "rev +13% YoY"))
+
+    def test_mixed_annual_column_falls_back_to_annual(self):
+        # MU bug: 'latest quarter' is actually an annual/TTM number (~4.5x a quarter).
+        # naive iloc compare said +346%; the sanity cap must reject it and the annual
+        # statement (+40%) must win instead.
+        quarterly = self._stmt(
+            ["2026-05-31", "2026-02-28", "2025-11-30", "2025-08-31", "2025-05-31"],
+            [37.4e9, 8.8e9, 8.7e9, 7.75e9, 8.38e9])
+        annual = self._stmt(["2026-05-31", "2025-05-31"], [37.4e9, 26.7e9])
+        self._patch(self._FakeTicker(quarterly=quarterly, annual=annual))
+        status, label = sb.revenue_growth("MU")
+        self.assertEqual(status, "yes")
+        self.assertIn("+40%", label)
+
+    def test_semiannual_reporter_uses_annual(self):
+        # ARGX-style: only 2 half-year columns (182d apart) -> no ~1y quarterly match,
+        # but annual statements exist -> must NOT return unknown.
+        quarterly = self._stmt(["2025-12-31", "2025-06-30"], [1.4e9, 1.2e9])
+        annual = self._stmt(["2025-12-31", "2024-12-31"], [2.6e9, 1.9e9])
+        self._patch(self._FakeTicker(quarterly=quarterly, annual=annual))
+        status, label = sb.revenue_growth("ARGX")
+        self.assertEqual(status, "yes")
+        self.assertIn("+37%", label)
+
+    def test_clean_quarterly_date_match(self):
+        quarterly = self._stmt(
+            ["2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31"],
+            [11.0e9, 10.5e9, 10.2e9, 10.0e9, 10.0e9])
+        self._patch(self._FakeTicker(quarterly=quarterly))
+        self.assertEqual(sb.revenue_growth("X"), ("yes", "rev +10% YoY"))
+
+    def test_no_data_is_unknown(self):
+        self._patch(self._FakeTicker())
+        self.assertEqual(sb.revenue_growth("ZZZZ"), ("unknown", "rev n/a"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
