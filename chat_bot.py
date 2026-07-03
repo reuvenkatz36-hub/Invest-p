@@ -717,18 +717,9 @@ def handle_scan(trades):
         if r is None:
             lines.append(f"• {sym}: no data")
             continue
-        if r.get("erratic"):
-            tag = f"\U0001F534 AVOID — {r.get('worst_swing')}% single-day swing (erratic)"
-        elif r["fires"] and rev_status == "yes":
-            tag = "\U0001F7E2 STRONG buy setup"
-        elif r["fires"]:
-            tag = "\U0001F7E2 buy setup (revenue unconfirmed)"
-        elif r["pulled_back"]:
-            tag = "\U0001F7E1 watch — pulled back, awaiting bounce"
-        elif r["is_uptrend"]:
-            tag = "⚪ uptrend, no buy point"
-        else:
-            tag = "\U0001F534 no setup"
+        tag = _setup_tag(r)
+        if "ENTRY" in tag and rev_status != "yes":
+            tag += " (revenue unconfirmed ⚠️)"
         lines.append(f"• {sym} ${r['price']:.2f}: {tag}")
     if len(syms) > 15:
         lines.append(f"…and {len(syms) - 15} more (showing first 15).")
@@ -924,6 +915,20 @@ def handle_message(text, trades):
     return analyze_and_report(sym, trades)
 
 
+def _code_updated():
+    """True when origin/main has moved past the commit this run checked out — meaning a
+    newer version of the bot was deployed. Best-effort: any git error returns False."""
+    import subprocess
+    try:
+        local = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                               text=True, timeout=15).stdout.strip()
+        remote = subprocess.run(["git", "ls-remote", "origin", "main"], capture_output=True,
+                                text=True, timeout=20).stdout.split()
+        return bool(local) and bool(remote) and remote[0] != local
+    except Exception:
+        return False
+
+
 def main():
     state = load_json(STATE_FILE, {"offset": None})
     trades = load_json(TRADES_FILE, {"open": [], "closed": []})
@@ -938,7 +943,16 @@ def main():
     window = int(os.environ.get("POLL_SECONDS", "120"))
     deadline = time.time() + window
     first = True
+    last_code_check = time.time()
     while time.time() < deadline:
+        # Self-update: if new code was pushed to main, end this cycle early so the
+        # relaunch step starts a fresh run on the NEW code (instead of answering with
+        # stale code for up to an hour).
+        if time.time() - last_code_check > 180:
+            last_code_check = time.time()
+            if _code_updated():
+                print("New code detected on origin/main — handing over to a fresh run.")
+                break
         updates = get_updates(offset, wait=0 if first else 20)
         first = False
         if updates is None:   # 409 conflict -> stop, next run retries

@@ -135,7 +135,8 @@ def _watchlist(watch):
             ohlcv = sb.get_ohlcv(data, sym)
             r = sb.evaluate(*ohlcv) if ohlcv else None
             if r:
-                setup = ("🟢 buy setup" if r["fires"] else "🟡 pulled back" if r["pulled_back"]
+                setup = ("🟢 buy setup" if (r["fires"] or r.get("cup_fires") or r.get("flat_fires"))
+                         else "🟡 pulled back" if r["pulled_back"]
                          else "⚪ uptrend" if r["is_uptrend"] else "🔴 no setup")
         except Exception:
             pass
