@@ -183,9 +183,14 @@
     "RDDT",
     "SHOP",
     "LII",
-    "MAS"
+    "MAS",
+    "CART",
+    "HEI"
   ],
   "account": {
     "starting_capital": 100000
+  },
+  "watch_targets": {
+    "SHOP": 139.5
   }
 }
