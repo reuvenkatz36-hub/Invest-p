@@ -778,10 +778,10 @@ def handle_daily():
 def handle_morning():
     ok, err = trigger_daily_scan(os.environ.get("MORNING_WORKFLOW", "premarket.yml"))
     if ok:
-        return ("\U0001F305 Started the morning news scan. It reads today's headlines, picks the "
-                "stocks with real catalysts, checks them against the strategy + health score, and "
-                "posts the brief here in a few minutes.")
-    return f"Couldn't start the morning news scan: {err}"
+        return ("\U0001F305 Started the full morning report: goal-price alerts, watchlist status, "
+                "news scan, and the top-10 market scan. The messages will arrive here over the "
+                "next ~10 minutes.")
+    return f"Couldn't start the morning report: {err}"
 
 
 def handle_capital(arg, trades):

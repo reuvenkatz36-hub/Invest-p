@@ -26,7 +26,7 @@ NASDAQ_SCREENER_URL = "https://api.nasdaq.com/api/screener/stocks"
 REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue growth
                                    # (drops both declining and unverifiable 'n/a' names)
 MIN_SCORE = int(os.environ.get("MIN_SCORE", "8"))   # only suggest stocks with a health score >= this
-MAX_ALERTS = int(os.environ.get("MAX_ALERTS", "5")) # cap the daily alert at the N best clean-sheet names
+MAX_ALERTS = int(os.environ.get("MAX_ALERTS", "10"))  # cap the daily alert at the N best clean-sheet names
 ERRATIC_WINDOW = 252   # judge "erratic" on the last ~12 months only (an old earnings gap shouldn't blacklist forever)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 

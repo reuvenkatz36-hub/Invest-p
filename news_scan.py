@@ -226,8 +226,8 @@ def check_watch_targets(trades_file=None):
             price = float(ohlcv[2][-1])
             tgt = float(targets[sym])
             if price >= tgt:
-                lines.append(f"\U0001F3AF {sym} reached your target: ${price:.2f} ≥ ${tgt:g} "
-                             f"(set /unwatch {sym} to stop this alert)")
+                lines.append(f"\U0001F3AF {sym} reached your goal price! ${price:.2f} ≥ your ${tgt:g} target "
+                             f"(/unwatch {sym} to stop this alert)")
         except Exception:
             continue
     return lines

@@ -250,7 +250,7 @@ class TestEnrichQualityGates(unittest.TestCase):
         self.assertEqual(syms[0], "A")                     # best score first
         self.assertEqual(drops["red_flags"], 1)
         self.assertEqual(drops["revenue"], 1)
-        self.assertEqual(drops["beyond_top"], 6 - sb.MAX_ALERTS)
+        self.assertEqual(drops["beyond_top"], max(0, 6 - sb.MAX_ALERTS))
         # expensive AI layer ran only for the finalists
         self.assertEqual(sorted(self.ai_calls), sorted(syms))
 
