@@ -1,18 +1,6 @@
 {
   "open": [
     {
-      "sym": "TCBK",
-      "entry": 50.84,
-      "amount": 2033.6,
-      "shares": 40,
-      "date": "2026-06-05",
-      "setup": {
-        "rev_status": "unknown",
-        "sector": "regional banks",
-        "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
-      }
-    },
-    {
       "sym": "CNS",
       "entry": 77.55,
       "amount": 2016.3,
@@ -175,6 +163,23 @@
       "outcome": "win",
       "pnl_usd": 141.24000000000007,
       "close_date": "2026-06-29"
+    },
+    {
+      "sym": "TCBK",
+      "entry": 50.84,
+      "amount": 2033.6,
+      "shares": 40,
+      "date": "2026-06-05",
+      "setup": {
+        "rev_status": "unknown",
+        "sector": "regional banks",
+        "note": "Logged manually (chat parser missed the original message). Indicator snapshot not captured at entry."
+      },
+      "exit": 52.68,
+      "pnl_pct": 3.619197482297396,
+      "outcome": "win",
+      "pnl_usd": 73.59999999999985,
+      "close_date": "2026-07-08"
     }
   ],
   "watch": [
