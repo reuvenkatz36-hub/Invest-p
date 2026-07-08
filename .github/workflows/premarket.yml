@@ -1,23 +1,22 @@
-name: Morning News Scan
+name: Morning Report
 
-# 13:00 UTC = 09:00 ET and 14:00 UTC = 10:00 ET during US daylight saving (EDT) —
-# i.e. 30 min before and 30 min after the 09:30 ET open. In winter (EST) these fire
-# at 08:00/09:00 ET; GitHub cron can't track DST, so we accept the one-hour drift
-# (same approach as dashboard.yml).
+# 05:00 UTC = 08:00 Israel time — the user's daily 8 AM package: goal-price alerts
+# (one dedicated message each), watchlist status page, news scan, and the full
+# market scan with the top-10 best setups. Runs every day (weekends re-report the
+# last close). GitHub cron can fire up to ~1h late under load.
 on:
   schedule:
-    - cron: "0 13 * * 1-5"
-    - cron: "0 14 * * 1-5"
+    - cron: "0 5 * * *"
   workflow_dispatch: {}
 
 concurrency:
-  group: morning-news-scan
+  group: morning-report
   cancel-in-progress: false
 
 jobs:
-  run-news-scan:
+  run-morning-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -30,10 +29,10 @@ jobs:
       - name: Install dependencies
         run: pip install yfinance requests anthropic
 
-      - name: Run morning news scan
+      - name: Run morning report
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CHAT_MODEL: "claude-sonnet-4-6"
-        run: python news_scan.py
+        run: python morning_report.py
