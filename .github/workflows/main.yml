@@ -5,6 +5,9 @@ name: Stock Signal Bot
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: write             # commit alert_history.json (the pick-repeat cooldown state)
+
 jobs:
   run-signal-bot:
     runs-on: ubuntu-latest
@@ -28,3 +31,22 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # lets the X-ray use Sonnet
           CHAT_MODEL: "claude-sonnet-4-6"
         run: python signal_bot.py
+
+      - name: Persist alert history (pick-repeat cooldown)
+        if: ${{ always() }}
+        run: |
+          git config user.name "stock-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
+          git add alert_history.json || true
+          if git diff --cached --quiet; then
+            echo "No history changes."
+            exit 0
+          fi
+          git commit -m "Update alert history [skip ci]"
+          for i in 1 2 3 4; do
+            if git push; then exit 0; fi
+            git pull --rebase --autostash origin main || true
+            sleep $((i * 2))
+          done
+          echo "::warning::alert-history push failed — picks may repeat tomorrow"
