@@ -89,7 +89,9 @@ CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data 
 CUP_K              = 15     # pivot significance for the cup's rims/bottom (bigger swings than LEFT_K)
 CUP_MIN_BARS       = 25     # rim-to-rim span: minimum
 CUP_MAX_BARS       = 250    # rim-to-rim span: maximum (~1 trading year)
-CUP_MIN_DEPTH_PCT  = 12.0   # cup depth (rim-bottom) as % of rim: floor (shallower = noise)
+CUP_MIN_DEPTH_PCT  = 6.0    # cup depth (rim-bottom) as % of rim: absolute floor
+CUP_DEEP_MIN_PCT   = 12.0   # shallower than this = a CONTINUATION cup: only valid near the highs
+CUP_NEAR_HIGH_PCT  = 5.0    # ...meaning the rim is within this % of the ~6-month high
 CUP_MAX_DEPTH_PCT  = 50.0   # ceiling (deeper = a crash, not a cup)
 RIM_TOL_PCT        = 6.0    # right rim must be within this % of the left rim (roughly level)
 BOTTOM_CENTER_LO   = 0.30   # bottom must sit in the central 30-70% of the span (rounded, not a late V)
@@ -337,6 +339,12 @@ def detect_cup_and_handle(highs, lows, closes):
             depth_pct = depth / rim_level * 100
             if not (CUP_MIN_DEPTH_PCT <= depth_pct <= CUP_MAX_DEPTH_PCT):
                 continue
+            # Shallow cups (6-12%) are CONTINUATION cups — from the user's charts they only
+            # count when pressing near the highs (cup chains riding a channel), not deep in a range.
+            if depth_pct < CUP_DEEP_MIN_PCT:
+                high_6m = max(closes[max(0, n - 126):])
+                if rim_level < high_6m * (1 - CUP_NEAR_HIGH_PCT / 100):
+                    continue
             # roundedness: bottom roughly central AND price dwells near the base (not a sharp V)
             frac = (bottom_idx - i_l) / span
             if not (BOTTOM_CENTER_LO <= frac <= BOTTOM_CENTER_HI):
@@ -434,8 +442,18 @@ def evaluate(highs, lows, closes, vols):
             past200 = sum(closes[-210:-10]) / 200
             golden_cross = "fresh" if past50 <= past200 else "active"
 
+    # Stop-loss: structural when a level exists (just under the broken rim/ceiling — the
+    # user's charts always anchor the stop to structure), else the default % off entry.
+    # Structure only tightens the stop, never widens it beyond STOP_PCT.
+    stop = price * (1 - STOP_PCT / 100)
+    for level in ((cup["rim"] if cup else None), (flat["level"] if flat else None)):
+        if level:
+            structural = level * 0.985              # ~1.5% under the broken level
+            if stop < structural < price:
+                stop = structural
+
     return dict(price=price, pct=pct, is_uptrend=is_uptrend, pulled_back=pulled_back,
-                fires=fires, resistance=resistance, stop=price * (1 - STOP_PCT / 100),
+                fires=fires, resistance=resistance, stop=stop,
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
                 erratic=erratic, worst_swing=round(worst_swing, 1),
