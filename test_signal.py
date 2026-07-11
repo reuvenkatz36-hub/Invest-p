@@ -248,7 +248,10 @@ class TestEnrichQualityGates(unittest.TestCase):
     ranked by score — and run the expensive AI/news enrichment ONLY for the finalists."""
 
     def setUp(self):
-        import xray
+        import xray, tempfile
+        self._hist = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self._orig_hist_file = sb.ALERT_HISTORY_FILE
+        sb.ALERT_HISTORY_FILE = self._hist.name
         self._orig = (sb.revenue_growth, xray.xray, xray._ai_layer, sb.fetch_news)
         self.ai_calls = []
         def fake_xray(sym, ai=False):
@@ -262,8 +265,10 @@ class TestEnrichQualityGates(unittest.TestCase):
         sb.fetch_news = lambda sym, limit=3: []
 
     def tearDown(self):
-        import xray
+        import xray, os as _os
         sb.revenue_growth, xray.xray, xray._ai_layer, sb.fetch_news = self._orig
+        sb.ALERT_HISTORY_FILE = self._orig_hist_file
+        _os.unlink(self._hist.name)
 
     def test_red_flags_blocked_and_top_n_capped(self):
         # 8 hits: one has a red flag, one has declining revenue, six are clean (scores 10..5)
@@ -302,6 +307,25 @@ class TestEnrichQualityGates(unittest.TestCase):
         kept, drops = sb.enrich_hits([(s, {"price": 5.0}) for s in self.profiles])
         self.assertEqual([h["sym"] for h in kept], ["Y", "X"])
         self.assertEqual(drops["beyond_top"], 0)
+
+    def test_cooldown_benches_recent_picks_and_records_new_ones(self):
+        import json, datetime
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        long_ago = (datetime.date.today() - datetime.timedelta(days=sb.ALERT_COOLDOWN_DAYS + 1)).isoformat()
+        json.dump({"HOT": yesterday, "OLD": long_ago}, open(sb.ALERT_HISTORY_FILE, "w"))
+        self.profiles = {"HOT": (10, 0), "OLD": (9, 0), "NEW": (9, 0)}
+        self.revs = {}
+        kept, drops = sb.enrich_hits([(s, {"price": 5.0}) for s in self.profiles])
+        syms = [h["sym"] for h in kept]
+        self.assertNotIn("HOT", syms)                       # shown yesterday -> benched
+        self.assertIn("OLD", syms)                          # cooldown expired -> eligible again
+        self.assertIn("NEW", syms)
+        self.assertEqual(drops["cooldown"], 1)
+        hist = json.load(open(sb.ALERT_HISTORY_FILE))
+        today = datetime.date.today().isoformat()
+        self.assertEqual(hist["OLD"], today)                # today's picks recorded
+        self.assertEqual(hist["NEW"], today)
+        self.assertEqual(hist["HOT"], yesterday)            # benched name keeps its old date
 
 
 def _channel_dip(drop_to_rail=True, drop_pct=19.0, turn_up=True, n_cycles=8):

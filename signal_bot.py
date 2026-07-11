@@ -1,6 +1,8 @@
 import os
 import re
+import json
 import time
+import datetime
 import xml.etree.ElementTree as ET
 from itertools import zip_longest
 from urllib.parse import quote_plus
@@ -27,6 +29,10 @@ REQUIRE_CONFIRMED_GROWTH = True    # only show names with proven YoY revenue gro
                                    # (drops both declining and unverifiable 'n/a' names)
 MIN_SCORE = int(os.environ.get("MIN_SCORE", "8"))   # only suggest stocks with a health score >= this
 MAX_ALERTS = int(os.environ.get("MAX_ALERTS", "10"))  # cap the daily alert at the N best clean-sheet names
+# Don't repeat a stock in the daily picks until this many days have passed — the same
+# top names otherwise reappear every day until their chart changes.
+ALERT_COOLDOWN_DAYS = int(os.environ.get("ALERT_COOLDOWN_DAYS", "3"))
+ALERT_HISTORY_FILE = os.environ.get("ALERT_HISTORY_FILE", "alert_history.json")
 ERRATIC_WINDOW = 252   # judge "erratic" on the last ~12 months only (an old earnings gap shouldn't blacklist forever)
 NEWS_PER_STOCK = 3                 # headlines to attach to each alert
 
@@ -648,6 +654,33 @@ def news_link(sym):
     return f"https://news.google.com/search?q={quote_plus(sym + ' stock')}"
 
 
+def _load_alert_history():
+    try:
+        with open(ALERT_HISTORY_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_alert_history(hist):
+    try:
+        cutoff = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+        hist = {s: d for s, d in hist.items() if str(d) >= cutoff}   # prune ancient entries
+        with open(ALERT_HISTORY_FILE, "w") as f:
+            json.dump(hist, f, indent=2)
+    except Exception as e:
+        print(f"alert-history save failed: {e}")
+
+
+def _in_cooldown(sym, hist):
+    """True when the stock already appeared in the daily picks within the cooldown window."""
+    try:
+        last = datetime.date.fromisoformat(str(hist.get(sym, "")))
+    except ValueError:
+        return False
+    return (datetime.date.today() - last).days < ALERT_COOLDOWN_DAYS
+
+
 def enrich_hits(hits):
     """Quality-gate the chart hits down to THE BEST OF THE BEST, then enrich only those.
 
@@ -657,8 +690,13 @@ def enrich_hits(hits):
     Sonnet verdict + news run ONLY for those finalists, so the scan can't blow the job
     timeout on a hit-heavy day. Returns (list of dicts, drop-reason tally)."""
     passed = []
-    drops = {"revenue": 0, "health_score": 0, "red_flags": 0, "beyond_top": 0}
+    drops = {"revenue": 0, "health_score": 0, "red_flags": 0, "beyond_top": 0, "cooldown": 0}
+    history = _load_alert_history()
     for sym, r in hits:
+        if _in_cooldown(sym, history):                      # shown recently -> bench it
+            print(f"  drop {sym}: shown {history.get(sym)} (cooldown {ALERT_COOLDOWN_DAYS}d)")
+            drops["cooldown"] += 1
+            continue
         status, rev_label = revenue_growth(sym)
         if REQUIRE_CONFIRMED_GROWTH and status != "yes":
             reason = "declining" if status == "no" else "growth unverifiable"
@@ -694,6 +732,11 @@ def enrich_hits(hits):
             print(f"  xray AI failed for {h['sym']}: {e}")
         h["news"] = fetch_news(h["sym"])
         time.sleep(0.3)
+    if finalists:                                           # remember today's picks for the cooldown
+        today = datetime.date.today().isoformat()
+        for h in finalists:
+            history[h["sym"]] = today
+        _save_alert_history(history)
     return finalists, drops
 
 
@@ -818,6 +861,8 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
             drop_parts.append(f"{drops['red_flags']} had red flags (not a clean sheet)")
         if drops.get("beyond_top"):
             drop_parts.append(f"{drops['beyond_top']} passed but ranked below the top {MAX_ALERTS}")
+        if drops.get("cooldown"):
+            drop_parts.append(f"{drops['cooldown']} already shown in the last {ALERT_COOLDOWN_DAYS} days")
 
     if not hits:
         lines.append(f"\nNo buy setups today that clear the bar (chart entry + growing revenue + "
