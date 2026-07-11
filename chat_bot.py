@@ -211,10 +211,13 @@ def rule_report(sym, r, rev_status, rev_label, news):
         entry = "breakout" if r.get("flat_kind") != "retest" else "retest entry"
         lines.append(f"📏 Flat-top {entry} — {r.get('flat_touches')} touches at ${r.get('flat_level'):.2f}, "
                      f"target ${r.get('flat_target'):.2f}")
+    if r.get("chan_fires"):
+        lines.append(f"🛒 Channel-dip buy — {r.get('chan_drop'):.1f}% correction to a rising rail held "
+                     f"{r.get('chan_touches')}× (stop ${r.get('chan_stop'):.2f}, target ${r.get('chan_target'):.2f})")
     if r.get("erratic"):
         verdict = (f"\U0001F534 AVOID — had a {r.get('worst_swing')}% single-day swing (up or down) in the "
                    "past year. Too erratic/inconsistent to trust, so the bot won't suggest it.")
-    elif (r["fires"] or r.get("cup_fires") or r.get("flat_fires")) and rev_status == "yes":
+    elif (r["fires"] or r.get("cup_fires") or r.get("flat_fires") or r.get("chan_fires")) and rev_status == "yes":
         verdict = "\U0001F7E2 STRONG — matches a full buy setup."
     elif r["pulled_back"]:
         verdict = "\U0001F7E1 WATCH — pulled back in an uptrend, waiting on the bounce + volume (and revenue)."
@@ -223,9 +226,10 @@ def rule_report(sym, r, rev_status, rev_label, news):
     else:
         verdict = "\U0001F534 Not an uptrend setup right now."
     lines += ["", verdict]
-    if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
-        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
-        lines.append(f"Entry ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
+    if r["fires"] or r.get("cup_fires") or r.get("flat_fires") or r.get("chan_fires"):
+        target = r.get("cup_target") or r.get("flat_target") or r.get("chan_target") or r["resistance"]
+        stop = r.get("chan_stop") if r.get("chan_fires") else r["stop"]
+        lines.append(f"Entry ${r['price']:.2f} | stop ${stop:.2f} | target ${target:.2f}")
     if news:
         lines.append("\nNews:")
         lines += [f"• {n}" for n in news[:3]]
@@ -682,6 +686,8 @@ def _setup_tag(r):
         return "no price data"
     if r.get("erratic"):
         return f"\U0001F534 erratic ({r.get('worst_swing')}% day) — avoid"
+    if r.get("chan_fires"):
+        return "🛒 channel-dip buy — ENTRY signal"
     if r.get("cup_fires"):
         return "☕ cup & handle — ENTRY signal"
     if r.get("flat_fires"):
