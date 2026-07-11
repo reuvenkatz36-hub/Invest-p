@@ -128,6 +128,35 @@ class TestCupAndHandle(unittest.TestCase):
         # handle retraces past the upper half of the cup
         self.assertIsNone(sb.detect_cup_and_handle(*_cup(handle_low=84.0)[:3]))
 
+    @staticmethod
+    def _shallow_cup_series():
+        # an ~9%-deep continuation cup at the highs with a proportionally shallow handle
+        lead = [85 + i for i in range(16)]                              # ..100 (left rim)
+        down = [100 - 8 * i / 18 for i in range(1, 19)]                 # 100 -> 92
+        base = [92, 92.5, 92, 92.8, 92.3, 92]
+        up = [92 + 8 * i / 18 for i in range(1, 19)]                    # 92 -> 100 (right rim)
+        handle = [98.5, 97.5, 97, 98, 99, 99.5]
+        return lead + down + base + up + handle + [101.0]
+
+    def test_shallow_continuation_cup_near_highs_fires(self):
+        h, l, c, v = _mk(self._shallow_cup_series())
+        cup = sb.detect_cup_and_handle(h, l, c)
+        self.assertIsNotNone(cup)
+        self.assertLess(cup["depth_pct"], sb.CUP_DEEP_MIN_PCT)
+
+    def test_shallow_cup_far_below_highs_rejected(self):
+        # same shallow cup, but with an old much-higher peak -> rim far from the 6m high -> no
+        c2 = [140.0, 141.0, 140.5] + self._shallow_cup_series()
+        h2 = [x * 1.005 for x in c2]; l2 = [x * 0.995 for x in c2]
+        self.assertIsNone(sb.detect_cup_and_handle(h2, l2, c2))
+
+    def test_structural_stop_under_broken_rim(self):
+        # after a cup breakout the stop must sit just under the rim (tighter than 4%)
+        r = sb.evaluate(*_cup())
+        self.assertTrue(r["cup_fires"])
+        self.assertAlmostEqual(r["stop"], r["cup_rim"] * 0.985, delta=0.02)
+        self.assertGreater(r["stop"], r["price"] * (1 - sb.STOP_PCT / 100))
+
     def test_sharp_v_is_not_rounded(self):
         lead = [85 + i for i in range(16)]
         down = [100 - (12 / 15) * i for i in range(1, 16)]    # 100 -> 88 gently
