@@ -111,6 +111,14 @@ FLAT_MAX_HEIGHT   = 30.0  # deeper than this = not a tight base
 RETEST_MAX_BARS   = 15    # a breakout this recent can still yield a "second chance" retest entry
 RETEST_TOL_PCT    = 2.5   # the pullback must come within this % of the broken level (and hold it)
 
+# --- Channel-dip buy ("heavy buy" at a proven rising channel's lower rail) ---
+CHAN_WINDOW        = 180   # fit the channel over the last ~9 months
+CHAN_MIN_TOUCHES   = 3     # the lower rail must have been touched at least this many times
+CHAN_TOL_PCT       = 2.5   # "at the rail" tolerance (for touches and for the entry)
+CHAN_MAX_BREAK_PCT = 3.0   # lows may pierce the rail at most this much (rail must be respected)
+CHAN_MIN_DROP_PCT  = 10.0  # the dip must be a real correction off the recent high
+CHAN_STOP_PCT      = 2.0   # structural stop: this far below the rail (not a blind 4% off entry)
+
 
 def send_telegram_message(message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -410,6 +418,12 @@ def evaluate(highs, lows, closes, vols):
     flat = detect_flat_top(highs, lows, closes)
     flat_fires = flat is not None and not erratic and not in_macro_downtrend
 
+    # Channel-dip buy: a sharp correction landing on a proven rising channel's lower rail.
+    # DELIBERATELY exempt from the macro-downtrend guard — the >10% drop IS the setup;
+    # the erratic guard still applies.
+    chan = detect_channel_dip(highs, lows, closes)
+    chan_fires = chan is not None and not erratic
+
     # Golden cross (50-day SMA above 200-day): a regime confirmation tag, not a gate.
     golden_cross = None
     if len(closes) >= 210:
@@ -437,6 +451,12 @@ def evaluate(highs, lows, closes, vols):
                 flat_level=flat["level"] if flat else None,
                 flat_touches=flat["touches"] if flat else None,
                 flat_kind=flat["kind"] if flat else None,
+                chan_fires=chan_fires,
+                chan_rail=chan["rail"] if chan else None,
+                chan_touches=chan["touches"] if chan else None,
+                chan_target=chan["target"] if chan else None,
+                chan_stop=chan["stop"] if chan else None,
+                chan_drop=chan["drop_pct"] if chan else None,
                 golden_cross=golden_cross)
 
 
@@ -659,6 +679,69 @@ def enrich_hits(hits):
     return finalists, drops
 
 
+def _lsq_line(points):
+    """Least-squares line through (x, y) points. Returns (slope, intercept) or None."""
+    n = len(points)
+    if n < 2:
+        return None
+    sx = sum(p[0] for p in points); sy = sum(p[1] for p in points)
+    sxx = sum(p[0] * p[0] for p in points); sxy = sum(p[0] * p[1] for p in points)
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return None
+    slope = (n * sxy - sx * sy) / denom
+    return slope, (sy - slope * sx) / n
+
+
+def detect_channel_dip(highs, lows, closes):
+    """The 'heavy buy' from the user's charts: a stock riding a long, PROVEN rising channel
+    takes a sharp correction straight down to the channel's lower rail and turns up there.
+    A drop like that fails the macro-downtrend guard by design — but when it lands on a rail
+    that has held 3+ times over months, it's a dip-buy, not a downtrend.
+
+    Returns dict(rail, touches, target, stop, drop_pct) or None. Stop is STRUCTURAL —
+    just below the rail — and the target is the channel's upper rail today."""
+    n = len(closes)
+    if n < CHAN_MIN_TOUCHES * LEFT_K + 10:
+        return None
+    x = n - 1
+    price = float(closes[-1])
+    swing_highs, swing_lows = find_pivots(highs, lows, LEFT_K, RIGHT_K)
+    lows_w = [(i, v) for i, v in swing_lows if i >= n - CHAN_WINDOW]
+    highs_w = [(i, v) for i, v in swing_highs if i >= n - CHAN_WINDOW]
+    if len(lows_w) < CHAN_MIN_TOUCHES or len(highs_w) < 2:
+        return None
+    fit = _lsq_line(lows_w)
+    if fit is None or fit[0] <= 0:                          # the rail must RISE
+        return None
+    slope, intercept = fit
+    rail_now = slope * x + intercept
+    if rail_now <= 0:
+        return None
+    # rail quality: touched >= CHAN_MIN_TOUCHES times, never broken by much
+    touches = sum(1 for i, v in lows_w if abs(v - (slope * i + intercept)) <= (slope * i + intercept) * CHAN_TOL_PCT / 100)
+    worst_break = min((v - (slope * i + intercept)) / (slope * i + intercept) * 100 for i, v in lows_w)
+    if touches < CHAN_MIN_TOUCHES or worst_break < -CHAN_MAX_BREAK_PCT:
+        return None
+    # a REAL correction: price fell CHAN_MIN_DROP_PCT+ from the recent high down to the rail
+    recent_high = max(closes[-60:])
+    drop_pct = (recent_high - price) / recent_high * 100
+    if drop_pct < CHAN_MIN_DROP_PCT:
+        return None
+    if not (rail_now * (1 - CHAN_TOL_PCT / 100) <= price <= rail_now * (1 + CHAN_TOL_PCT / 100)):
+        return None                                         # must be AT the rail
+    if closes[-1] <= closes[-2]:                            # and turning up off it
+        return None
+    # target: the channel's upper rail today (parallel structure through the swing highs)
+    fit_hi = _lsq_line(highs_w)
+    target = fit_hi[0] * x + fit_hi[1] if fit_hi else None
+    if not target or target <= price:
+        return None
+    return {"rail": round(rail_now, 2), "touches": touches,
+            "target": round(target, 2), "stop": round(rail_now * (1 - CHAN_STOP_PCT / 100), 2),
+            "drop_pct": round(drop_pct, 1)}
+
+
 def setup_strength(r):
     """How perfectly a hit matches the strategy: more independent signals firing at once =
     a stronger, more textbook setup. Used to rank the daily finalists (after health score)."""
@@ -669,6 +752,8 @@ def setup_strength(r):
         s += 2.0 if r.get("cup_kind") != "retest" else 1.5  # fresh breakout beats a retest
     if r.get("flat_fires"):
         s += 2.0 if r.get("flat_kind") != "retest" else 1.5
+    if r.get("chan_fires"):
+        s += 2.0                                            # dip to a proven channel rail
     if r.get("golden_cross") == "fresh":
         s += 1.0
     elif r.get("golden_cross") == "active":
@@ -741,9 +826,14 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
         r = h["r"]
         lines.append("")
         # Pattern targets are measured moves (level + base height); the bounce uses resistance.
-        target = r.get("cup_target") or r.get("flat_target") or r["resistance"]
-        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${r['stop']:.2f} | target ${target:.2f}")
+        # The channel dip uses its own structural stop (just below the rail) and rail target.
+        target = r.get("cup_target") or r.get("flat_target") or r.get("chan_target") or r["resistance"]
+        stop = r.get("chan_stop") if r.get("chan_fires") else r["stop"]
+        lines.append(f"{h['sym']}: ${r['price']:.2f} | stop ${stop:.2f} | target ${target:.2f}")
         setups = []
+        if r.get("chan_fires"):
+            setups.append(f"🛒 Channel-dip buy ({r.get('chan_drop'):.1f}% correction to a rail "
+                          f"held {r.get('chan_touches')}×, stop under ${r.get('chan_rail'):.2f})")
         if r.get("cup_fires"):
             entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry 🔁"
             setups.append(f"☕ Cup & Handle {entry} (rim ${r.get('cup_rim'):.2f}, depth ${r.get('cup_depth'):.2f})")
@@ -838,7 +928,7 @@ def main():
                     for cond in missing:
                         gate_fails[cond] = gate_fails.get(cond, 0) + 1
                     watchlist.append((sym, r["price"], missing))
-            if r["fires"] or r.get("cup_fires") or r.get("flat_fires"):
+            if r["fires"] or r.get("cup_fires") or r.get("flat_fires") or r.get("chan_fires"):
                 hits.append((sym, r))
         time.sleep(CHUNK_PAUSE)
 

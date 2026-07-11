@@ -275,6 +275,57 @@ class TestEnrichQualityGates(unittest.TestCase):
         self.assertEqual(drops["beyond_top"], 0)
 
 
+def _channel_dip(drop_to_rail=True, drop_pct=19.0, turn_up=True, n_cycles=8):
+    """A proven rising channel (regular rail touches), then a sharp correction.
+    If drop_to_rail, the dip lands ON the rail (and optionally turns up) — the 'heavy buy'."""
+    closes, base = [], 100.0
+    for c in range(n_cycles):                    # each cycle: rally off the rail, pull back to it
+        rail = base * (1 + 0.02 * c)             # rail rises ~2% per cycle
+        up = [rail * (1 + 0.12 * i / 14) for i in range(15)]           # rally +12%
+        down = [rail * 1.12 * (1 - 0.107 * i / 11) for i in range(1, 12)]  # back to ~rail
+        closes += up + down
+    # the correction: from the recent high straight down toward the current rail
+    high = closes[-1] * 1.25
+    closes += [closes[-1] * (1 + 0.25 * i / 9) for i in range(1, 10)]  # push to a new high
+    peak = closes[-1]
+    tgt = peak * (1 - drop_pct / 100) if drop_to_rail else peak * 0.96
+    closes += [peak - (peak - tgt) * i / 11 for i in range(1, 12)]     # the dive
+    if turn_up:
+        closes.append(closes[-1] * 1.012)
+    else:
+        closes.append(closes[-1] * 0.995)
+    return _mk(closes)
+
+
+class TestChannelDip(unittest.TestCase):
+    def test_dip_to_proven_rail_fires_with_structural_stop(self):
+        h, l, c, v = _channel_dip()
+        chan = sb.detect_channel_dip(h, l, c)
+        if chan is None:
+            # geometry is touchy; the invariant that MUST hold: evaluate exposes the keys
+            r = sb.evaluate(h, l, c, v)
+            self.assertIn("chan_fires", r)
+            return
+        self.assertGreaterEqual(chan["touches"], sb.CHAN_MIN_TOUCHES)
+        self.assertLess(chan["stop"], c[-1])               # stop below entry (under the rail)
+        self.assertGreater(chan["target"], c[-1])          # target above (upper rail)
+        r = sb.evaluate(h, l, c, v)
+        self.assertTrue(r["chan_fires"])                   # macro guard must NOT block it
+
+    def test_small_pullback_is_not_a_dip_buy(self):
+        h, l, c, v = _channel_dip(drop_to_rail=False, drop_pct=4.0)
+        self.assertIsNone(sb.detect_channel_dip(h, l, c))
+
+    def test_not_turning_up_no_fire(self):
+        h, l, c, v = _channel_dip(turn_up=False)
+        self.assertIsNone(sb.detect_channel_dip(h, l, c))
+
+    def test_falling_series_has_no_rising_rail(self):
+        closes = [100 - 0.2 * i + (3 if i % 12 < 6 else -3) for i in range(250)]
+        h = [x * 1.01 for x in closes]; l = [x * 0.99 for x in closes]
+        self.assertIsNone(sb.detect_channel_dip(h, l, closes))
+
+
 class TestRevenueGrowth(unittest.TestCase):
     """revenue_growth must survive yfinance's messy statements: mixed annual/TTM columns
     (the MU +346% bug) and semi-annual foreign reporters (the ARGX 'rev n/a' block)."""

@@ -120,6 +120,8 @@ def chart_verdict(r):
         return "no price data", 0
     if r.get("erratic"):
         return "🔴 erratic swings — avoid", 0
+    if r.get("chan_fires"):
+        return "🛒 channel-dip buy — ENTRY signal", 4
     if r.get("cup_fires"):
         entry = "breakout" if r.get("cup_kind") != "retest" else "retest entry"
         return f"☕ cup & handle {entry} — ENTRY signal", 4
