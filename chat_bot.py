@@ -200,7 +200,9 @@ def rule_report(sym, r, rev_status, rev_label, news):
              f"{chk(r['near_support'])} Pulled back near support",
              f"{chk(r['in_zone'])} In the {sb.ENTRY_MIN_PCT:.0f}-{sb.ENTRY_MAX_PCT:.0f}% buy zone off the low",
              f"{chk(r['volume_ok'])} Bounce volume above average",
-             f"{chk(not r.get('erratic'))} No wild single-day swings (past 2 years)",
+             f"{chk(not r.get('erratic'))} No wild single-day swings (past year)",
+             f"{chk(not r.get('too_volatile'))} Calm enough — avg daily move "
+             f"{r.get('avg_daily_move', 0):.1f}% (max {sb.VOL_MAX_DAILY_PCT:g}%)",
              f"{rev_icon} {rev_label}"]
     if r.get("golden_cross"):
         lines.append(f"⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")

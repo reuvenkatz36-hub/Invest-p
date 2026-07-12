@@ -88,6 +88,10 @@ RECENT_LOW_MAX_BARS = 40  # the bounce low must be recent (a fresh pullback, not
 VOL_MULT = 1.0         # bounce-day volume must beat the prior 20-day average by this multiple
 STOP_PCT = 4.0
 MAX_SWING_PCT = 15.0   # reject a stock if ANY single day (up OR down) moved this % or more — too erratic
+VOL_MAX_DAILY_PCT = float(os.environ.get("VOL_MAX_DAILY_PCT", "3.0"))
+# ^ calmness gate: reject stocks whose AVERAGE absolute daily move (last ~3 months) exceeds
+#   this — chart patterns select for movers, and a 4% stop is meaningless on a stock that
+#   swings 3-4% on an ordinary day.
 CHUNK = 50             # download this many tickers at a time
 CHUNK_PAUSE = 1.0      # seconds to pause between chunks (be gentle on the data source)
 
@@ -415,28 +419,36 @@ def evaluate(highs, lows, closes, vols):
     volume_ok = prev_avg_vol > 0 and any(v > VOL_MULT * prev_avg_vol for v in vols[-2:])
 
     pulled_back = is_uptrend and coming_off_recent_low and near_support and in_zone and price < resistance
+    # Calmness gate: the stock's ORDINARY day must be quiet enough that a 4% stop means
+    # something. Average absolute daily move over the last ~3 months.
+    recent = closes[-61:]
+    moves = [abs(recent[i] / recent[i - 1] - 1) * 100 for i in range(1, len(recent)) if recent[i - 1] > 0]
+    avg_daily_move = round(sum(moves) / len(moves), 2) if moves else 0.0
+    too_volatile = avg_daily_move > VOL_MAX_DAILY_PCT
+
     # Stability guard: reject erratic names that had a violent single-day move (up OR down) within
     # the last ~year (e.g. CRVL/FLEX). Crazy jumps = inconsistent = untrustworthy, so never suggest them.
     worst_drop, biggest_jump = largest_daily_swing(closes[-ERRATIC_WINDOW:])
     worst_swing = worst_drop if abs(worst_drop) >= biggest_jump else biggest_jump
     erratic = (worst_drop <= -MAX_SWING_PCT) or (biggest_jump >= MAX_SWING_PCT)
-    fires = pulled_back and turning_up and volume_ok and not erratic and not in_macro_downtrend
+    fires = (pulled_back and turning_up and volume_ok and not erratic
+             and not in_macro_downtrend and not too_volatile)
 
     # Cup-and-handle: a separate, standalone breakout signal (near the highs by construction,
-    # so the macro-downtrend guard doesn't apply; the erratic guard still does).
+    # so the macro-downtrend guard doesn't apply; the erratic + calmness guards still do).
     cup = detect_cup_and_handle(highs, lows, closes)
-    cup_fires = cup is not None and not erratic
+    cup_fires = cup is not None and not erratic and not too_volatile
 
     # Flat-top breakout (the TCBK pattern): a multi-touch horizontal ceiling gives way.
-    # Flat tops sit near the highs, so both guards apply.
+    # Flat tops sit near the highs, so all guards apply.
     flat = detect_flat_top(highs, lows, closes)
-    flat_fires = flat is not None and not erratic and not in_macro_downtrend
+    flat_fires = flat is not None and not erratic and not in_macro_downtrend and not too_volatile
 
     # Channel-dip buy: a sharp correction landing on a proven rising channel's lower rail.
     # DELIBERATELY exempt from the macro-downtrend guard — the >10% drop IS the setup;
-    # the erratic guard still applies.
+    # the erratic + calmness guards still apply.
     chan = detect_channel_dip(highs, lows, closes)
-    chan_fires = chan is not None and not erratic
+    chan_fires = chan is not None and not erratic and not too_volatile
 
     # Golden cross (50-day SMA above 200-day): a regime confirmation tag, not a gate.
     golden_cross = None
@@ -463,6 +475,7 @@ def evaluate(highs, lows, closes, vols):
                 higher_highs=higher_highs, higher_lows=higher_lows, near_support=near_support,
                 in_zone=in_zone, volume_ok=volume_ok, turning_up=turning_up,
                 erratic=erratic, worst_swing=round(worst_swing, 1),
+                avg_daily_move=avg_daily_move, too_volatile=too_volatile,
                 support=support, sup_slope=sup_slope,
                 in_macro_downtrend=in_macro_downtrend, high_6m=round(high_6m, 2),
                 cup_fires=cup_fires,
@@ -835,6 +848,8 @@ def gate_misses(r):
         missing.append("volume below average")
     if r["erratic"]:
         missing.append("erratic swings")
+    if r.get("too_volatile"):
+        missing.append("too volatile")
     if r["in_macro_downtrend"]:
         missing.append("macro downtrend")
     return missing
@@ -909,6 +924,9 @@ def build_summary(universe_n, scanned, uptrends, pulled, hits, used_fallback,
             lines.append(f"  📐 Setup: {' + '.join(setups)}")
         if r.get("golden_cross"):
             lines.append(f"  ⭐ Golden cross ({r['golden_cross']}) — 50-day avg above 200-day")
+        if r.get("avg_daily_move") is not None:
+            lines.append(f"  🌊 Calm: moves {r['avg_daily_move']:.1f}%/day on average "
+                         f"(≤ {VOL_MAX_DAILY_PCT:g}% required)")
         lines.append(f"  {rev_icon.get(h['rev_status'], '')} {h['rev_label']}")
         xr = h.get("xray")
         if xr and xr.get("ok"):
