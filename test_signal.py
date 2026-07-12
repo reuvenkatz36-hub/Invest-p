@@ -83,6 +83,26 @@ class TestSharperGates(unittest.TestCase):
         self.assertEqual(sb.gate_misses(r), ["not turning up", "macro downtrend"])
         r_ok = {"turning_up": True, "volume_ok": True, "erratic": False, "in_macro_downtrend": False}
         self.assertEqual(sb.gate_misses(r_ok), [])
+        r_vol = {**r_ok, "too_volatile": True}
+        self.assertEqual(sb.gate_misses(r_vol), ["too volatile"])
+
+    def test_volatile_stock_blocked_calm_stock_passes(self):
+        # jumpy: a normal staircase uptrend but with ±2.5% alternating daily noise on top
+        # -> avg daily move well above the cap -> too_volatile blocks ALL signals
+        closes = [c * (1.025 if i % 2 == 0 else 0.9756)
+                  for i, c in enumerate(self._uptrend(300))]
+        h = [c * 1.005 for c in closes]; l = [c * 0.995 for c in closes]
+        r = sb.evaluate(h, l, closes, [1000] * 300)
+        self.assertIsNotNone(r)
+        self.assertTrue(r["too_volatile"])
+        self.assertGreater(r["avg_daily_move"], sb.VOL_MAX_DAILY_PCT)
+        self.assertFalse(r["fires"] or r["cup_fires"] or r["flat_fires"] or r["chan_fires"])
+        # calm staircase uptrend -> passes the calmness gate
+        calm = self._uptrend(300)
+        hc = [c * 1.01 for c in calm]; lc = [c * 0.99 for c in calm]
+        rc = sb.evaluate(hc, lc, calm, [1000] * 300)
+        self.assertFalse(rc["too_volatile"])
+        self.assertLessEqual(rc["avg_daily_move"], sb.VOL_MAX_DAILY_PCT)
 
 
 def _mk(closes):
