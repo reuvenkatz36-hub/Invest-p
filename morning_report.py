@@ -12,12 +12,22 @@ Env: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (required); ANTHROPIC_API_KEY, CHAT_MODEL
 (recommended). Run by .github/workflows/premarket.yml every day at 05:00 UTC.
 """
 
+import datetime
+
 import chat_bot as cb
 import news_scan as ns
 import signal_bot as sb
 
 
 def main():
+    # Duplicate guard: two crons back this report up (GitHub fires them hours late and
+    # sometimes skips one). Whichever run completes first stamps today's date; the other exits.
+    today = datetime.date.today().isoformat()
+    history = sb._load_alert_history()
+    if history.get("_last_report") == today:
+        print(f"Morning report already sent today ({today}) — skipping duplicate run.")
+        return
+
     trades = cb.load_json(cb.TRADES_FILE, {"open": [], "closed": [], "watch": []})
 
     # 1) goal-price alerts — each one a standalone message
@@ -44,6 +54,11 @@ def main():
 
     # 4) full market scan — sends its own top-MAX_ALERTS summary
     sb.main()
+
+    # stamp AFTER a full run, so a crashed run doesn't stop the backup cron from retrying
+    history = sb._load_alert_history()               # reload: sb.main() updated the cooldowns
+    history["_last_report"] = today
+    sb._save_alert_history(history)
 
 
 if __name__ == "__main__":
