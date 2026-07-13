@@ -1,12 +1,14 @@
 name: Morning Report
 
-# 05:00 UTC = 08:00 Israel time — the user's daily 8 AM package: goal-price alerts
-# (one dedicated message each), watchlist status page, news scan, and the full
-# market scan with the top-10 best setups. Runs every day (weekends re-report the
-# last close). GitHub cron can fire up to ~1h late under load.
+# The user's daily 8 AM (Israel) package: goal-price alerts, watchlist page, news
+# scan, and the top-10 market scan. GitHub's scheduler consistently fires 2-3.5h
+# LATE, so the primary cron is set to 03:00 UTC so the run actually lands ~05:00-
+# 06:30 UTC (~8:00-9:30 Israel). The second cron is a backup in case the first
+# never fires — morning_report.py skips itself if today's report already went out.
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 3 * * *"
+    - cron: "30 5 * * *"
   workflow_dispatch: {}
 
 concurrency:

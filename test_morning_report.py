@@ -10,6 +10,32 @@ import morning_report as mr
 
 
 class TestMorningReport(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self._orig_hist = mr.sb.ALERT_HISTORY_FILE
+        mr.sb.ALERT_HISTORY_FILE = self._tmp.name
+
+    def tearDown(self):
+        import os as _os
+        mr.sb.ALERT_HISTORY_FILE = self._orig_hist
+        _os.unlink(self._tmp.name)
+
+    def test_second_run_same_day_skips(self):
+        import json, datetime
+        json.dump({"_last_report": datetime.date.today().isoformat()}, open(self._tmp.name, "w"))
+        sent = []
+        orig = (mr.sb.send_telegram_message, mr.sb.send_long, mr.sb.main, mr.ns.check_watch_targets)
+        mr.sb.send_telegram_message = lambda m: sent.append(m) or True
+        mr.sb.send_long = lambda m: sent.append(m) or 1
+        mr.sb.main = lambda: sent.append("SCAN")
+        mr.ns.check_watch_targets = lambda: ["🎯 hit"]
+        try:
+            mr.main()
+        finally:
+            mr.sb.send_telegram_message, mr.sb.send_long, mr.sb.main, mr.ns.check_watch_targets = orig
+        self.assertEqual(sent, [])                     # duplicate run sends NOTHING
+
     def test_sections_sent_in_order_with_standalone_targets(self):
         sent = []
         orig = (mr.sb.send_telegram_message, mr.sb.send_long, mr.sb.main,
