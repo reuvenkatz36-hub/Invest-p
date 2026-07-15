@@ -19,27 +19,6 @@
       "setup": {
         "rev_status": "unknown"
       }
-    },
-    {
-      "sym": "JNJ",
-      "entry": 253.47,
-      "amount": 5069.4,
-      "shares": 20,
-      "date": "2026-07-01",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
-      "sym": "ARGX",
-      "entry": 950.38,
-      "amount": 251850.7,
-      "shares": 265,
-      "date": "2026-07-03",
-      "setup": {
-        "rev_status": "unknown"
-      },
-      "off_strategy": "unconfirmed_revenue"
     }
   ],
   "closed": [
@@ -180,6 +159,37 @@
       "outcome": "win",
       "pnl_usd": 73.59999999999985,
       "close_date": "2026-07-08"
+    },
+    {
+      "sym": "JNJ",
+      "entry": 253.47,
+      "amount": 5069.4,
+      "shares": 20,
+      "date": "2026-07-01",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 248.29,
+      "pnl_pct": -2.0436343551505134,
+      "outcome": "loss",
+      "pnl_usd": -103.60000000000012,
+      "close_date": "2026-07-15"
+    },
+    {
+      "sym": "ARGX",
+      "entry": 950.38,
+      "amount": 251850.7,
+      "shares": 265,
+      "date": "2026-07-03",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "off_strategy": "unconfirmed_revenue",
+      "exit": 880.26,
+      "pnl_pct": -7.378101391022539,
+      "outcome": "loss",
+      "pnl_usd": -18581.800000000003,
+      "close_date": "2026-07-15"
     }
   ],
   "watch": [
