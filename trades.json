@@ -11,14 +11,15 @@
       }
     },
     {
-      "sym": "HOOD",
-      "entry": 100.1,
-      "amount": 3003.0,
-      "shares": 30,
-      "date": "2026-06-29",
+      "sym": "SHOP",
+      "entry": 127.12,
+      "amount": 10042.48,
+      "shares": 79,
+      "date": "2026-07-16",
       "setup": {
         "rev_status": "unknown"
-      }
+      },
+      "off_strategy": "unconfirmed_revenue"
     }
   ],
   "closed": [
@@ -190,6 +191,21 @@
       "outcome": "loss",
       "pnl_usd": -18581.800000000003,
       "close_date": "2026-07-15"
+    },
+    {
+      "sym": "HOOD",
+      "entry": 100.1,
+      "amount": 3003.0,
+      "shares": 30,
+      "date": "2026-06-29",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 108.61,
+      "pnl_pct": 8.501498501498506,
+      "outcome": "win",
+      "pnl_usd": 255.30000000000015,
+      "close_date": "2026-07-16"
     }
   ],
   "watch": [
