@@ -1,16 +1,6 @@
 {
   "open": [
     {
-      "sym": "CNS",
-      "entry": 77.55,
-      "amount": 2016.3,
-      "shares": 26,
-      "date": "2026-06-26",
-      "setup": {
-        "rev_status": "unknown"
-      }
-    },
-    {
       "sym": "SHOP",
       "entry": 127.12,
       "amount": 10042.48,
@@ -206,6 +196,21 @@
       "outcome": "win",
       "pnl_usd": 255.30000000000015,
       "close_date": "2026-07-16"
+    },
+    {
+      "sym": "CNS",
+      "entry": 77.55,
+      "amount": 2016.3,
+      "shares": 26,
+      "date": "2026-06-26",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "exit": 74.35,
+      "pnl_pct": -4.126370083816896,
+      "outcome": "loss",
+      "pnl_usd": -83.20000000000007,
+      "close_date": "2026-07-17"
     }
   ],
   "watch": [
