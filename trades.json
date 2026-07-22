@@ -10,6 +10,28 @@
         "rev_status": "unknown"
       },
       "off_strategy": "unconfirmed_revenue"
+    },
+    {
+      "sym": "HOOD",
+      "entry": 107.17,
+      "amount": 5036.99,
+      "shares": 47,
+      "date": "2026-07-22",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "off_strategy": "unconfirmed_revenue"
+    },
+    {
+      "sym": "WY",
+      "entry": 23.95,
+      "amount": 10035.05,
+      "shares": 419,
+      "date": "2026-07-22",
+      "setup": {
+        "rev_status": "unknown"
+      },
+      "off_strategy": "unconfirmed_revenue"
     }
   ],
   "closed": [
