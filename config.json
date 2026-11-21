@@ -1,18 +1,26 @@
 {
   "timezone": "Asia/Jerusalem",
-  "quiet_hours": { "enabled": true, "start": "23:00", "end": "07:00" },
+  "quiet_hours": {
+    "enabled": true,
+    "start": "23:00",
+    "end": "07:00"
+  },
   "pre_market_lead_minutes": 60,
   "post_market_delay_minutes": 20,
   "max_article_age_hours": 36,
   "max_alerts_per_run": 6,
   "watchlist": [
-    { "ticker": "CLBT", "name": "Cellebrite" },
-    { "ticker": "NBIS", "name": "Nebius" },
-    { "ticker": "RDDT", "name": "Reddit" },
-    { "ticker": "SHOP", "name": "Shopify" },
-    { "ticker": "LII", "name": "Lennox International" },
-    { "ticker": "MAS", "name": "Masco" },
-    { "ticker": "CART", "name": "Instacart" },
-    { "ticker": "HEI", "name": "HEICO" }
+    {
+      "ticker": "NVDA",
+      "name": "Nvidia"
+    },
+    {
+      "ticker": "GOOGL",
+      "name": "Alphabet (Google)"
+    },
+    {
+      "ticker": "TSM",
+      "name": "Taiwan Semiconductor (TSMC)"
+    }
   ]
 }

@@ -84,6 +84,11 @@ class NewsTests(unittest.TestCase):
         self.assertTrue(news.is_relevant(SHOP, "SHOP stock rallies"))
         self.assertFalse(news.is_relevant(SHOP, "Shopping season starts early"))
         self.assertFalse(news.is_relevant(SHOP, "Is it time to buy Shopify?"))
+        goog, tsm = Stock("GOOGL", "Alphabet (Google)"), Stock("TSM", "Taiwan Semiconductor (TSMC)")
+        self.assertTrue(news.is_relevant(goog, "Google unveils new Gemini model"))
+        self.assertTrue(news.is_relevant(tsm, "TSMC sales jump 30% in October"))
+        self.assertFalse(news.is_relevant(tsm, "Taiwan holds military drills"))
+        self.assertEqual(news.aliases(goog), ["Alphabet", "Google"])
 
     def test_parse_and_near_duplicate_removal(self):
         now = dt.datetime.now(UTC)
@@ -189,6 +194,29 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.cfg.find("NVDA").name, "NVIDIA Corp")
         self.assertTrue(run.handle_command("/remove NVDA", self.cfg, self.state, self.tg, self.secrets, dt.datetime.now(UTC)))
         self.assertFalse(run.handle_command("/add !!", self.cfg, self.state, self.tg, self.secrets, dt.datetime.now(UTC)))
+
+
+    def test_clear_command(self):
+        self.assertTrue(run.handle_command("/clear", self.cfg, self.state, self.tg, self.secrets, dt.datetime.now(UTC)))
+        self.assertEqual(self.cfg.watchlist, [])
+
+    def test_plain_english_request(self):
+        intent = ai.Intent(actions=[ai.Action(type="clear", ticker="", name=""),
+                                    ai.Action(type="add", ticker="nvda", name="Nvidia"),
+                                    ai.Action(type="add", ticker="GOOGL", name="Alphabet"),
+                                    ai.Action(type="add", ticker="TSM", name="TSMC")], reply="")
+        with mock.patch("newsbot.ai.parse_request", return_value=intent):
+            changed = run.handle_command("delete my old watchlist and add nvidia google and tsm",
+                                         self.cfg, self.state, self.tg, self.secrets, dt.datetime.now(UTC))
+        self.assertTrue(changed)
+        self.assertEqual(self.cfg.tickers(), ["NVDA", "GOOGL", "TSM"])
+        self.assertEqual(len(self.tg.sent), 1)                 # one combined reply
+        self.assertIn("Now watching: NVDA, GOOGL, TSM", self.tg.sent[0])
+
+    def test_plain_english_without_ai_explains_commands(self):
+        with mock.patch("newsbot.ai.parse_request", return_value=None):
+            self.assertFalse(run.handle_command("hello", self.cfg, self.state, self.tg, self.secrets, dt.datetime.now(UTC)))
+        self.assertIn("/add", self.tg.sent[0])
 
 
 class PersistenceTests(unittest.TestCase):

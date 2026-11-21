@@ -259,14 +259,34 @@ def maybe_brief(cfg: Config, state: dict, tg: Telegram, secrets, articles, now: 
 
 # --------------------------------------------------------------------------- commands
 
-HELP = """\U0001F916 Commands
-/list — your watchlist
-/add TICKER [Company name] — watch a stock (e.g. /add NVDA Nvidia)
-/remove TICKER — stop watching
-/news TICKER — latest headlines for a stock
-/brief — send a briefing right now
-/status — market status & schedule
-Commands are processed on the next scheduled run (within ~15 min)."""
+HELP = """\U0001F916 I send you news about your stocks \u2014 alerts during the day and a briefing before and after the US market.
+
+Just write to me normally, for example:
+\u2022 "add Nvidia and Apple"
+\u2022 "remove Shopify"
+\u2022 "delete my whole watchlist"
+\u2022 "show my list" / "news on TSM"
+
+Or use commands:
+/list \u2014 your watchlist
+/add TICKER [Company name] \u2014 watch a stock (e.g. /add NVDA Nvidia)
+/remove TICKER \u2014 stop watching
+/clear \u2014 remove all stocks
+/news TICKER \u2014 latest headlines for a stock
+/brief \u2014 a news briefing right now
+/status \u2014 market status & schedule"""
+
+
+class Collector:
+    """Stands in for Telegram to gather several replies into one message."""
+
+    def __init__(self):
+        self.parts: list[str] = []
+        self.dry_run = True
+
+    def send(self, text: str) -> bool:
+        self.parts.append(text)
+        return True
 
 
 def lookup_name(ticker: str) -> str | None:
@@ -312,6 +332,14 @@ def handle_command(text: str, cfg: Config, state: dict, tg: Telegram, secrets,
             cfg.watchlist.remove(s)
             tg.send(f"\U0001F5D1 Removed {arg}.")
             return True
+    elif cmd == "/clear":
+        if not cfg.watchlist:
+            tg.send("Your watchlist is already empty.")
+            return False
+        removed = ", ".join(cfg.tickers())
+        cfg.watchlist.clear()
+        tg.send(f"\U0001F5D1 Cleared your watchlist ({removed}).")
+        return True
     elif cmd == "/news":
         s = cfg.find(arg) or (Stock(arg, lookup_name(arg) or arg) if TICKER_RE.match(arg) else None)
         if not s:
@@ -342,49 +370,110 @@ def handle_command(text: str, cfg: Config, state: dict, tg: Telegram, secrets,
                 f"Quiet hours: {cfg.quiet_start}–{cfg.quiet_end}" + ("" if cfg.quiet_enabled else " (off)"))
     elif cmd.startswith("/"):
         tg.send("Unknown command. /help")
+    elif text.strip():
+        return handle_plain_text(text, cfg, state, tg, secrets, now)
     return False
 
 
+def handle_plain_text(text: str, cfg: Config, state: dict, tg: Telegram, secrets,
+                      now: dt.datetime) -> bool:
+    """Understand a normal sentence ("remove Shopify and add Nvidia") via Claude."""
+    intent = ai.parse_request(text, cfg.tickers(), secrets.anthropic_key, secrets.claude_model,
+                              secrets.use_fallbacks)
+    if intent is None:
+        tg.send("Sorry, I didn't understand that. Try /add NVDA, /remove SHOP, /clear or /list. /help")
+        return False
+    out = Collector()
+    changed = False
+    for a in intent.actions:
+        t = a.ticker.upper().strip()
+        if a.type == "add" and TICKER_RE.match(t):
+            changed |= handle_command(f"/add {t} {a.name}".strip(), cfg, state, out, secrets, now)
+        elif a.type == "remove" and t:
+            changed |= handle_command(f"/remove {t}", cfg, state, out, secrets, now)
+        elif a.type == "news" and t:
+            handle_command(f"/news {t}", cfg, state, out, secrets, now)
+        elif a.type in ("clear", "list", "brief", "status", "help"):
+            changed |= handle_command(f"/{a.type}", cfg, state, out, secrets, now)
+    if changed and not any(a.type == "list" for a in intent.actions):
+        out.send("\U0001F4CB Now watching: " + (", ".join(cfg.tickers()) or "nothing"))
+    if intent.reply:
+        out.send(intent.reply)
+    tg.send("\n\n".join(out.parts) if out.parts else "OK \U0001F44D")
+    return changed
+
+
 # --------------------------------------------------------------------------- main
+
+def process_messages(cfg: Config, state: dict, tg: Telegram, secrets, wait: int = 0) -> None:
+    texts, state["telegram_offset"] = tg.get_commands(state.get("telegram_offset", 0), wait=wait)
+    changed = False
+    for t in texts:
+        print(f"message: {t[:80]!r}")
+        try:
+            changed |= handle_command(t, cfg, state, tg, secrets, dt.datetime.now(dt.timezone.utc))
+        except Exception as e:
+            print(f"command {t!r} failed: {e}")
+            tg.send(f"\u26A0 Sorry, that failed: {t}")
+    if changed:
+        save_watchlist(cfg, CONFIG_PATH)
+
+
+def run_cycle(cfg: Config, state: dict, tg: Telegram, secrets) -> bool:
+    """News scan + briefing check. Returns True if a stage failed."""
+    now = dt.datetime.now(dt.timezone.utc)
+    print(f"Cycle at {now.isoformat()} \u2014 market {market.market_status(now)}, {len(cfg.watchlist)} stocks")
+    articles = news.fetch_all(cfg.watchlist, cfg.max_article_age_hours)
+    failed = False
+    # Each stage is isolated: a failed news scan never blocks a briefing, and vice versa.
+    for stage in (scan, maybe_brief):
+        try:
+            stage(cfg, state, tg, secrets, articles, now)
+        except Exception:
+            failed = True
+            traceback.print_exc()
+    return failed
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="newsbot")
     p.add_argument("--dry-run", action="store_true", help="print messages instead of sending")
     p.add_argument("--brief", choices=["pre", "post", "closed"], help="force a briefing now (not recorded)")
+    p.add_argument("--loop", type=int, default=0, metavar="SECONDS",
+                   help="stay running this long: answer messages instantly, scan news every --interval")
+    p.add_argument("--interval", type=int, default=900, help="seconds between news scans in --loop mode")
     args = p.parse_args(argv)
 
     cfg = load_config()
     secrets = load_secrets()
     state = load_state(STATE_PATH)
     tg = Telegram(secrets.telegram_token, secrets.telegram_chat_id, dry_run=args.dry_run)
-    now = dt.datetime.now(dt.timezone.utc)
-    print(f"Run at {now.isoformat()} — market {market.market_status(now)}, "
-          f"{len(cfg.watchlist)} stocks, AI {'on (' + secrets.claude_model + ')' if secrets.anthropic_key else 'off'}")
+    print(f"Start \u2014 AI {'on (' + secrets.claude_model + ')' if secrets.anthropic_key else 'off'}")
 
     try:
-        texts, state["telegram_offset"] = tg.get_commands(state.get("telegram_offset", 0))
-        changed = False
-        for t in texts:
-            try:
-                changed |= handle_command(t, cfg, state, tg, secrets, now)
-            except Exception as e:
-                print(f"command {t!r} failed: {e}")
-                tg.send(f"⚠ Command failed: {t}")
-        if changed:
-            save_watchlist(cfg, CONFIG_PATH)
-
-        articles = news.fetch_all(cfg.watchlist, cfg.max_article_age_hours)
         if args.brief:
+            now = dt.datetime.now(dt.timezone.utc)
+            articles = news.fetch_all(cfg.watchlist, cfg.max_article_age_hours)
             tg.send(build_briefing(args.brief, cfg, state, articles, now, secrets))
             return 0
-        failed = False
-        # Each stage is isolated: a failed news scan never blocks a briefing, and vice versa.
-        for stage in (scan, maybe_brief):
+        if not args.loop:
+            process_messages(cfg, state, tg, secrets)
+            return 1 if run_cycle(cfg, state, tg, secrets) else 0
+
+        end = time.time() + args.loop
+        next_scan = 0.0
+        while time.time() < end:
+            if time.time() >= next_scan:
+                run_cycle(cfg, state, tg, secrets)
+                next_scan = time.time() + args.interval
+                save_state(state, STATE_PATH)
+            wait = int(max(1, min(50, next_scan - time.time(), end - time.time())))
             try:
-                stage(cfg, state, tg, secrets, articles, now)
+                process_messages(cfg, state, tg, secrets, wait=wait)
             except Exception:
-                failed = True
                 traceback.print_exc()
-        return 1 if failed else 0
+                time.sleep(5)
+            save_state(state, STATE_PATH)
+        return 0
     finally:
         save_state(state, STATE_PATH)   # always persist dedupe state, even after an error

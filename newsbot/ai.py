@@ -160,3 +160,57 @@ def write_briefing(kind_label: str, context: str, api_key: str, model: str,
 
 def debug_dump(items: list[Classified]) -> str:
     return json.dumps([i.model_dump() for i in items], indent=1)
+
+
+# --------------------------------------------------------------------------- plain-English requests
+
+class Action(BaseModel):
+    type: Literal["add", "remove", "clear", "list", "news", "brief", "status", "help", "none"]
+    ticker: str
+    name: str
+
+
+class Intent(BaseModel):
+    actions: list[Action]
+    reply: str
+
+
+INTENT_SYSTEM = """You turn a Telegram message into actions for a stock-news bot. The bot ONLY manages a watchlist \
+and sends news; it never gives buy/sell advice or technical analysis.
+Action types:
+- add: watch a stock. ticker = its primary US-listed ticker (e.g. Nvidia -> NVDA, Google/Alphabet -> GOOGL, \
+TSMC/Taiwan Semiconductor -> TSM), name = short company name; if it's widely known by another name, add it in \
+parentheses, e.g. "Alphabet (Google)", "Taiwan Semiconductor (TSMC)".
+- remove: stop watching a stock (use the ticker as it appears in the CURRENT WATCHLIST).
+- clear: remove every stock (e.g. "delete my old watchlist", "start fresh"). Put clear BEFORE any adds.
+- list: show the watchlist. news: latest headlines for one ticker. brief: a news briefing now.
+- status: market hours/schedule. help: what the bot can do.
+- none: nothing to do (greeting, thanks, question outside the bot's scope).
+For list/brief/status/help/clear/none use ticker "" and name "".
+reply: one short, friendly sentence only if the message needs an answer the actions don't give \
+(e.g. it asks for analysis: explain the bot only sends news). Otherwise "".
+Never invent tickers: if unsure which company is meant, use none and ask in reply."""
+
+
+def parse_request(text: str, watchlist: list[str], api_key: str, model: str,
+                  use_fallbacks: bool = True) -> Intent | None:
+    """Understand a free-text message. None if AI is unavailable."""
+    if not api_key:
+        return None
+    try:
+        resp = _client(api_key).beta.messages.parse(
+            model=model,
+            max_tokens=4000,
+            system=INTENT_SYSTEM,
+            messages=[{"role": "user", "content":
+                       f"CURRENT WATCHLIST: {', '.join(watchlist) or '(empty)'}\n\nMESSAGE: {text}"}],
+            output_format=Intent,
+            output_config={"effort": "low"},
+            **_request_extras(use_fallbacks),
+        )
+        if resp.stop_reason == "refusal":
+            return None
+        return resp.parsed_output
+    except Exception as e:
+        print(f"AI request parsing failed: {e}")
+        return None

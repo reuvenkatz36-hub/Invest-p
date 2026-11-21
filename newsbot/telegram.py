@@ -46,11 +46,11 @@ class Telegram:
         self.dry_run = dry_run or not token or not chat_id
         self.sent: list[str] = []
 
-    def _api(self, method: str, **payload):
+    def _api(self, method: str, http_timeout: int = 20, **payload):
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         for attempt in range(4):
             try:
-                r = requests.post(url, json=payload, timeout=20)
+                r = requests.post(url, json=payload, timeout=http_timeout)
                 if r.status_code == 429:
                     wait = r.json().get("parameters", {}).get("retry_after", 3)
                     time.sleep(min(int(wait), 30))
@@ -78,19 +78,24 @@ class Telegram:
             time.sleep(0.4)
         return ok
 
-    def get_commands(self, offset: int) -> tuple[list[str], int]:
-        """Text messages from the authorized chat since `offset`. Returns (texts, new_offset)."""
+    def get_commands(self, offset: int, wait: int = 0, max_age_s: int = 6 * 3600) -> tuple[list[str], int]:
+        """Text messages from the authorized chat since `offset` (long-polls up to `wait` seconds).
+        Messages older than `max_age_s` are skipped. Returns (texts, new_offset)."""
         if self.dry_run:
+            if wait:
+                time.sleep(min(wait, 1))
             return [], offset
-        res = self._api("getUpdates", offset=offset, timeout=0, allowed_updates=["message"])
+        res = self._api("getUpdates", http_timeout=wait + 15, offset=offset, timeout=wait,
+                        allowed_updates=["message"])
         if not res:
             return [], offset
         texts = []
+        now = time.time()
         for upd in res.get("result", []):
             offset = max(offset, upd["update_id"] + 1)
             msg = upd.get("message") or {}
             if str(msg.get("chat", {}).get("id")) != self.chat_id:
                 continue  # ignore anyone who isn't you
-            if msg.get("text"):
+            if msg.get("text") and now - msg.get("date", now) <= max_age_s:
                 texts.append(msg["text"].strip())
         return texts, offset
