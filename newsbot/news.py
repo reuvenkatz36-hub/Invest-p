@@ -94,18 +94,34 @@ def source_rank(source: str) -> int:
     return len(PREFERRED_SOURCES)
 
 
+GENERIC_FIRST_WORDS = {"taiwan", "international", "american", "united", "general", "first", "national",
+                       "china", "bank", "global", "advanced", "applied", "digital", "energy"}
+
+
+def aliases(stock: Stock) -> list[str]:
+    """'Alphabet (Google)' -> ['Alphabet', 'Google']; 'Taiwan Semiconductor (TSMC)' -> [..., 'TSMC']."""
+    out = []
+    main = re.sub(r"\(.*?\)", "", stock.name).strip()
+    if main:
+        out.append(main)
+    out += [x.strip() for grp in re.findall(r"\((.*?)\)", stock.name) for x in grp.split("/") if x.strip()]
+    return out or [stock.ticker]
+
+
 def is_relevant(stock: Stock, title: str) -> bool:
-    """Headline must name the company or ticker, and not be a content-farm listicle."""
+    """Headline must name the company (or an alias) or ticker, and not be a content-farm listicle."""
     if NOISE_PATTERNS.search(title):
         return False
+    if re.search(rf"(?<![A-Za-z]){re.escape(stock.ticker)}(?![A-Za-z])", title):
+        return True
     t = title.lower()
-    name = stock.name.lower()
-    first_word = name.split()[0] if name else ""
-    return (
-        re.search(rf"(?<![A-Za-z]){re.escape(stock.ticker)}(?![A-Za-z])", title) is not None
-        or name in t
-        or (len(first_word) >= 4 and re.search(rf"\b{re.escape(first_word)}\b", t) is not None)
-    )
+    for name in (a.lower() for a in aliases(stock)):
+        if re.search(rf"\b{re.escape(name)}\b", t):
+            return True
+        first = name.split()[0]
+        if len(first) >= 4 and first not in GENERIC_FIRST_WORDS and re.search(rf"\b{re.escape(first)}\b", t):
+            return True
+    return False
 
 
 def parse_rss(xml_bytes: bytes, stock: Stock, default_source: str) -> list[Article]:
@@ -151,7 +167,8 @@ def _get(url: str, retries: int = 2) -> bytes | None:
 
 
 def feed_urls(stock: Stock) -> list[tuple[str, str]]:
-    q = quote_plus(f'"{stock.name}" OR "{stock.ticker} stock" when:2d')
+    names = " OR ".join(f'"{a}"' for a in aliases(stock))
+    q = quote_plus(f'{names} OR "{stock.ticker} stock" when:2d')
     return [
         (f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={stock.ticker}&region=US&lang=en-US",
          "Yahoo Finance"),
