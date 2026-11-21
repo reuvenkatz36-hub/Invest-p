@@ -11,12 +11,12 @@
   "max_alerts_per_run": 6,
   "watchlist": [
     {
-      "ticker": "NVDA",
-      "name": "Nvidia"
-    },
-    {
       "ticker": "GOOGL",
       "name": "Alphabet (Google)"
+    },
+    {
+      "ticker": "NVDA",
+      "name": "Nvidia"
     },
     {
       "ticker": "TSM",
