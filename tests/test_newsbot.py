@@ -141,7 +141,7 @@ class FlowTests(unittest.TestCase):
                self.art("Shopify hosts developer event")]
         run.scan(self.cfg, self.state, self.tg, self.secrets, new, day)
         self.assertEqual(len(self.tg.sent), 2)                       # only CEO alert
-        self.assertIn("CRITICAL", self.tg.sent[1])
+        self.assertTrue(self.tg.sent[1].startswith("\U0001F534 SHOP"))
         self.assertEqual(len(self.state["queue"]), 1)                # medium -> briefing
         run.scan(self.cfg, self.state, self.tg, self.secrets, new, day)
         self.assertEqual(len(self.tg.sent), 2)                       # no repeats
@@ -153,7 +153,7 @@ class FlowTests(unittest.TestCase):
         run.scan(self.cfg, self.state, self.tg, self.secrets,
                  [self.art("Shopify downgraded at Goldman"), self.art("Shopify files for bankruptcy")], night)
         self.assertEqual(len(self.tg.sent), 1)
-        self.assertIn("CRITICAL", self.tg.sent[0])
+        self.assertTrue(self.tg.sent[0].startswith("\U0001F534 SHOP"))
         self.assertEqual(len(self.state["held"]), 1)
         run.scan(self.cfg, self.state, self.tg, self.secrets, [], utc(2026, 11, 24, 6, 0))  # 08:00 Israel
         self.assertEqual(len(self.tg.sent), 2)
@@ -176,9 +176,10 @@ class FlowTests(unittest.TestCase):
             run.maybe_brief(self.cfg, self.state, self.tg, self.secrets, [], now)
         self.assertEqual(len(self.tg.sent), 1)
         msg = self.tg.sent[0]
-        self.assertIn("PRE-MARKET BRIEFING", msg)
-        self.assertIn("[1] Reuters", msg)
-        self.assertIn("price unavailable", msg)
+        self.assertIn("Before the open", msg)
+        self.assertIn("Shopify hosts developer event", msg)
+        self.assertNotIn("http", msg)                      # no links / sources
+        self.assertIn("price n/a", msg)
         self.assertEqual(self.state["queue"], [])
 
     def test_stale_close_is_flagged(self):

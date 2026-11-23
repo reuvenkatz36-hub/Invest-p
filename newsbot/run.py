@@ -38,6 +38,11 @@ def local(ts: dt.datetime, tz: str) -> str:
     return ts.astimezone(ZoneInfo(tz)).strftime("%a %d %b %H:%M")
 
 
+def ago(ts: dt.datetime, now: dt.datetime) -> str:
+    mins = max(0, int((now - ts).total_seconds() // 60))
+    return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago" if mins < 1440 else f"{mins // 1440}d ago"
+
+
 def in_quiet_hours(now: dt.datetime, cfg: Config) -> bool:
     if not cfg.quiet_enabled:
         return False
@@ -49,22 +54,9 @@ def in_quiet_hours(now: dt.datetime, cfg: Config) -> bool:
 
 def format_alert(group: list[tuple[news.Article, ai.Classified]], tz: str) -> str:
     art, c = group[0]
-    lines = [
-        f"{IMPORTANCE_ICON[c.importance]} {c.importance.upper()} · {art.ticker} · "
-        f"{SENTIMENT_ICON[c.sentiment]} {c.sentiment}",
-        "",
-        art.title,
-        "",
-        c.summary,
-        "",
-        f"\U0001F552 {local(art.published, tz)} ({tz.split('/')[-1]} time) · {art.source}",
-        art.url,
-    ]
-    if len(group) > 1:
-        lines.append("")
-        lines.append(f"Also covered by {len(group) - 1} more source(s):")
-        for a, _ in group[1:4]:
-            lines.append(f"• {a.source}: {a.url}")
+    lines = [f"{IMPORTANCE_ICON[c.importance]} {art.ticker} {SENTIMENT_ICON[c.sentiment]}  {art.title}"]
+    if c.summary:
+        lines.append(c.summary)
     return "\n".join(lines)
 
 
@@ -156,10 +148,10 @@ def _price_block(quotes: dict, symbols: list[tuple[str, str]], expected: dt.date
     for sym, label in symbols:
         q = quotes.get(sym)
         if not q:
-            lines.append(f"• {label}: price unavailable")
+            lines.append(f"• {label}: price n/a")
             continue
         stale = expected is not None and q.bar_date < expected
-        lines.append(q.line() + (f"  ⚠ STALE — expected {expected:%b %d} close" if stale else ""))
+        lines.append(q.line() + (f"  ⚠ STALE (from {q.bar_date:%b %d})" if stale else ""))
     return lines
 
 
@@ -168,28 +160,27 @@ def build_briefing(kind: str, cfg: Config, state: dict, articles: list[news.Arti
     tz = cfg.timezone
     today = market.et_date(now)
     sess = market.session_for(today)
-    stock_syms = [(s.ticker, f"{s.ticker} ({s.name})") for s in cfg.watchlist]
+    stock_syms = [(s.ticker, s.ticker) for s in cfg.watchlist]
 
     if kind == "pre":
         prev = market.previous_session(today)
-        title = f"\U0001F305 PRE-MARKET BRIEFING — {today:%a %d %b %Y}"
-        sub = (f"US open {local(sess.open, tz)} {tz.split('/')[-1]} time"
-               + (" · early close today " + local(sess.close, tz) if sess.early_close else "")
-               + (" · (sent late: market already open)" if late else ""))
+        title = f"\U0001F305 Before the open — {today:%a %d %b}"
+        sub = (f"Opens {sess.open.astimezone(ZoneInfo(tz)):%H:%M}"
+               + (f", closes early {sess.close.astimezone(ZoneInfo(tz)):%H:%M}" if sess.early_close else "")
+               + (" (market already open)" if late else ""))
         expected = prev.date if prev else None
         idx_syms = prices.FUTURES + prices.INDICES
         price_note = f"Stock prices are the previous session's close ({expected:%b %d})." if expected else ""
     elif kind == "post":
-        title = f"\U0001F306 AFTER-CLOSE RECAP — {today:%a %d %b %Y}"
-        sub = (f"US close {local(sess.close, tz)} {tz.split('/')[-1]} time"
-               + (" (early close)" if sess.early_close else ""))
+        title = f"\U0001F306 After the close — {today:%a %d %b}"
+        sub = "Early close today" if sess.early_close else None
         expected = today
         idx_syms = prices.INDICES
         price_note = "Prices are today's regular-session closes."
     else:
         nxt = market.next_session(today)
-        title = f"\U0001F4F4 MARKET CLOSED ({market.closed_reason(today)}) — {today:%a %d %b %Y}"
-        sub = f"Next US session opens {local(nxt.open, tz)} {tz.split('/')[-1]} time" if nxt else ""
+        title = f"\U0001F4F4 Market closed ({market.closed_reason(today)}) — {today:%a %d %b}"
+        sub = f"Next open: {local(nxt.open, tz)}" if nxt else None
         expected = None
         idx_syms = prices.INDICES
         price_note = "No trading today. Prices shown are the last session's closes."
@@ -214,11 +205,10 @@ def build_briefing(kind: str, cfg: Config, state: dict, articles: list[news.Arti
     items = sorted(pool.values(), key=lambda d: (ai.IMPORTANCE_ORDER.get(d.get("importance", "medium"), 2),
                                                  -dt.datetime.fromisoformat(d["published"]).timestamp()))[:25]
 
-    sources = [f"[{i + 1}] {d['source']} — {d['url']}" for i, d in enumerate(items)]
     headline_lines = [
-        f"[{i + 1}] {d['ticker']} | {local(dt.datetime.fromisoformat(d['published']), tz)} | "
+        f"- {d['ticker']} | {local(dt.datetime.fromisoformat(d['published']), tz)} | "
         f"{d.get('importance', 'unrated')} | {d['title']}" + (f" — note: {d['summary']}" if d.get("summary") else "")
-        for i, d in enumerate(items)]
+        for d in items]
 
     label = {"pre": "pre-market briefing (prepare for today's US session: what changed overnight, "
                     "what to watch today, upcoming catalysts mentioned in the headlines)",
@@ -231,16 +221,13 @@ def build_briefing(kind: str, cfg: Config, state: dict, articles: list[news.Arti
         price_note,
         "", "MARKET:", *market_lines,
         "", "WATCHLIST PRICES:", *stock_lines,
-        "", "HEADLINES (cite as [n]):", *(headline_lines or ["(no new headlines for the watchlist)"]),
+        "", "HEADLINES:", *(headline_lines or ["(no new headlines for the watchlist)"]),
     ])
     body = ai.write_briefing(label, context, secrets.anthropic_key, secrets.claude_model, secrets.use_fallbacks)
     if body is None:   # plain digest fallback
-        body = "\n".join(["\U0001F4CA Market", *market_lines, "", "\U0001F4BC Your stocks", *stock_lines, "",
-                          "\U0001F4F0 Headlines", *([f"[{i + 1}] {d['ticker']}: {d['title']}"
-                                                     for i, d in enumerate(items)] or ["No new headlines."])])
+        body = "\n".join(["Market:", *market_lines, "", *stock_lines, "",
+                          *([f"\u2022 {d['ticker']}: {d['title']}" for d in items[:8]] or ["No new news."])])
     parts = [title, sub, "", body]
-    if sources:
-        parts += ["", "\U0001F517 Sources", *sources]
     return "\n".join(p for p in parts if p is not None)
 
 
@@ -346,8 +333,8 @@ def handle_command(text: str, cfg: Config, state: dict, tg: Telegram, secrets,
             tg.send("Usage: /news TICKER")
         else:
             arts = news.fetch_stock_news(s, 72)[:8]
-            tg.send(f"\U0001F4F0 {s.ticker} — latest headlines\n\n" + "\n\n".join(
-                f"{a.title}\n{a.source} · {local(a.published, cfg.timezone)}\n{a.url}" for a in arts)
+            tg.send(f"\U0001F4F0 {s.ticker}\n" + "\n".join(
+                f"\u2022 {a.title} ({ago(a.published, now)})" for a in arts)
                 if arts else f"No recent headlines found for {s.ticker}.")
     elif cmd == "/brief":
         sess = market.session_for(market.et_date(now))

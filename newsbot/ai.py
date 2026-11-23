@@ -45,23 +45,31 @@ significant legal/regulatory step, major product or partnership news, unusual >7
 - event_key: short lowercase slug naming the underlying event, IDENTICAL for headlines covering the same event \
 (e.g. "shop-q3-earnings-beat").
 - repeat_of_recent_alert: true if the event is the same as one in RECENTLY ALERTED.
-- summary: one factual sentence (max 30 words) on what happened and why it matters. Use only what the headline \
-states; do not invent numbers, quotes or reasons. If the headline is ambiguous, say so.
+- summary: max 15 plain words saying what it means for the stock, like a friend texting \
+(e.g. "Beat earnings and raised guidance — good for the stock."). Use only what the headline states; \
+never invent numbers or reasons.
 Return one entry per headline id."""
 
 
-BRIEFING_SYSTEM = """You write a concise, factual stock briefing delivered as a Telegram message (plain text, \
-no markdown, no tables). Audience: one private investor who owns/watches the listed stocks.
+BRIEFING_SYSTEM = """You write a short stock update sent as a Telegram message to one private investor.
+Style: straight to the point, plain everyday English, short lines. No fluff, no disclaimers, no filler,
+no "it's worth noting", no markdown (no ** or #), no citations, no links, no source names.
 
-Hard rules:
-- Use ONLY the price data and headlines provided. Never invent news, numbers, analyst opinions, quotes or sources.
-- Cite headlines by their [n] number right after the claim they support. Do not write URLs; the sources list is appended.
-- Separate fact from interpretation: label interpretation with words like "may", "could", "suggests".
-- Correlation is not causation: do not say a headline caused a price move unless the headline itself reports it \
-explains the move; otherwise say the move "coincided with" the news or that no clear catalyst was found.
-- If a price is marked stale or missing, say so plainly — never present it as current.
-- If there is little news, keep it short. Do not pad.
-- Use short sections with simple emoji headers, and keep the whole briefing under ~550 words."""
+Format exactly like this (skip any part that has nothing real to say):
+<one-line headline: the single most important thing>
+
+Market: <one line, index moves>
+
+<TICKER> <price> (<+x.x%>) — <what happened, max ~15 words, or "quiet">
+(one line per watchlist stock)
+
+👀 Watch: <1–3 short bullets with concrete things to watch, e.g. earnings date, a key level, a decision>
+
+Rules:
+- Use ONLY the prices and headlines given. Never make up news, numbers or reasons.
+- Don't say news caused a move unless the headline says so; if there's no clear reason, write "no clear reason".
+- If a price is marked STALE or unavailable, write "price n/a" for it.
+- Keep the whole message under 150 words."""
 
 
 def _client(api_key: str):
@@ -98,7 +106,7 @@ def heuristic_classify(articles: list[Article]) -> list[Classified]:
         sent = "mixed" if pos and neg else "positive" if pos else "negative" if neg else "neutral"
         out.append(Classified(id=i, relevant=True, importance=imp, sentiment=sent,
                               event_key=f"{a.ticker.lower()}-{a.key[:8]}", repeat_of_recent_alert=False,
-                              summary="(Keyword triage — AI analysis unavailable.)"))
+                              summary=""))
     return out
 
 
