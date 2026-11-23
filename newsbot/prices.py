@@ -6,8 +6,8 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-INDICES = [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"), ("^DJI", "Dow Jones"), ("^VIX", "VIX")]
-FUTURES = [("ES=F", "S&P 500 futures"), ("NQ=F", "Nasdaq 100 futures")]
+INDICES = [("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^DJI", "Dow"), ("^VIX", "VIX")]
+FUTURES = [("ES=F", "S&P futures"), ("NQ=F", "Nasdaq futures")]
 
 
 @dataclass
@@ -24,7 +24,7 @@ class Quote:
 
     def line(self) -> str:
         arrow = "▲" if self.change_pct > 0 else ("▼" if self.change_pct < 0 else "▪")
-        return f"{arrow} {self.label}: {self.last:,.2f} ({self.change_pct:+.2f}%) [{self.bar_date:%b %d}]"
+        return f"{arrow} {self.label} {self.last:,.2f} ({self.change_pct:+.1f}%)"
 
 
 def daily_quotes(symbols: list[tuple[str, str]]) -> dict[str, Quote]:
